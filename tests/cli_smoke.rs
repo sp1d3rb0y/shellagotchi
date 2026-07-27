@@ -84,3 +84,21 @@ fn feed_exits_zero_and_silent_when_daemon_absent() {
         elapsed
     );
 }
+
+#[test]
+fn status_reports_clear_error_when_daemon_down() {
+    // No daemon listening on this tempdir's socket, so `status` must
+    // fail loudly: non-zero exit and a non-empty, helpful stderr
+    // message -- unlike `feed`/`prompt`, which must stay silent.
+    let dir = tempfile::tempdir().unwrap();
+    let assert = Command::cargo_bin("shellagotchi")
+        .unwrap()
+        .env("XDG_RUNTIME_DIR", dir.path())
+        .args(["status"])
+        .assert();
+    let output = assert.failure().get_output().clone();
+    assert!(
+        !output.stderr.is_empty(),
+        "expected a non-empty stderr message when the daemon is unreachable"
+    );
+}

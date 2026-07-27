@@ -40,6 +40,18 @@ enum Commands {
         #[arg(long, default_value = "compact")]
         format: String,
     },
+    /// Show the pet's current status as a bordered ASCII card, fetched
+    /// live from the daemon over IPC.
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Alias for `status` (the plan treats `show` and `status` as the
+    /// same command).
+    Show {
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -60,7 +72,57 @@ async fn main() {
         Commands::Prompt { format } => {
             print_prompt(&format);
         }
+        Commands::Status { json } | Commands::Show { json } => {
+            if let Err(err) = status(json).await {
+                eprintln!("{err}");
+                std::process::exit(1);
+            }
+        }
     }
+}
+
+/// Fetches the pet's current state from the daemon over IPC and prints
+/// either a bordered ASCII status card or (with `--json`) the raw
+/// `PetState` as pretty JSON.
+///
+/// Unlike `feed`/`prompt`, this command is explicit/interactive: if the
+/// daemon is unreachable it prints a clear, actionable error to stderr
+/// and returns an `Err` so the caller exits non-zero, rather than
+/// failing silently.
+async fn status(json: bool) -> anyhow::Result<()> {
+    let socket_path = crate::paths::socket_path();
+    let req = Request::new(RequestOp::Status);
+
+    let response = send_request(&socket_path, &req).await.map_err(|err| {
+        anyhow::anyhow!(
+            "could not reach the shellagotchi daemon ({err}). Is it running? Try `shellagotchi daemon`."
+        )
+    })?;
+
+    if !response.ok {
+        let message = response
+            .error
+            .unwrap_or_else(|| "daemon returned an error with no message".to_string());
+        anyhow::bail!("daemon reported an error: {message}");
+    }
+
+    let state = response
+        .state
+        .ok_or_else(|| anyhow::anyhow!("daemon's status response was missing pet state"))?;
+
+    if json {
+        println!("{}", crate::render::card::render_json(&state));
+    } else {
+        let now = SystemClock.now();
+        let no_color = std::env::var("NO_COLOR").is_ok()
+            || !std::io::IsTerminal::is_terminal(&std::io::stdout());
+        println!(
+            "{}",
+            crate::render::card::render_card(&state, now, no_color)
+        );
+    }
+
+    Ok(())
 }
 
 /// How long (in seconds) a prompt cache file may go un-refreshed before

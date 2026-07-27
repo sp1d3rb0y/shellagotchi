@@ -2,4 +2,6 @@
 //! prompt segments). Kept separate from `pet`/`daemon` since it's pure
 //! presentation with no I/O or state mutation.
 
+pub mod card;
 pub mod prompt;
+pub mod sprites;

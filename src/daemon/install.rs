@@ -193,7 +193,6 @@ mod tests {
         assert!(UNIT_FILE_CONTENTS.contains("Type=simple"));
         assert!(UNIT_FILE_CONTENTS.contains("[Install]"));
         assert!(UNIT_FILE_CONTENTS.contains("WantedBy=default.target"));
-        // No sd-notify integration in this simplified unit.
         assert!(!UNIT_FILE_CONTENTS.contains("Type=notify"));
         assert!(!UNIT_FILE_CONTENTS.contains("WatchdogSec"));
     }

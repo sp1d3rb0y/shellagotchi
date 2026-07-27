@@ -291,10 +291,6 @@ pub fn pet_interaction(state: &mut PetState, now: DateTime<Utc>) -> Vec<Event> {
     Vec::new()
 }
 
-// TODO(future task): implement max_feeds_per_min rate limiting via a
-// timestamp ring buffer in PetState (requires a new state field to track
-// recent feed timestamps, which is out of scope for this task).
-
 /// Processes a single shell command's exit as a "feeding" event, updating
 /// satiety/happiness/streaks and rolling the "bad food" sickness risk.
 ///

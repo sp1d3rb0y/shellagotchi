@@ -11,7 +11,6 @@ use std::path::Path;
 pub struct Config {
     pub pet_name: String,
     pub boredom_after_minutes: u32,
-    pub max_feeds_per_min: u32,
     pub sleep_start_hour: u32,
     pub wake_hour: u32,
     pub poop_interval_commands: u32,
@@ -39,7 +38,6 @@ impl Default for Config {
         Config {
             pet_name: "Pet".to_string(),
             boredom_after_minutes: 45,
-            max_feeds_per_min: 30,
             sleep_start_hour: 23,
             wake_hour: 7,
             poop_interval_commands: 40,

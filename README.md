@@ -144,7 +144,6 @@ its `Default` impl:
 |---|---|---|
 | `pet_name` | `"Pet"` | Display name shown in the status card, prompt, and TUI. |
 | `boredom_after_minutes` | `45` | Minutes of no fed commands before boredom starts rising. |
-| `max_feeds_per_min` | `30` | Reserved for future rate-limiting of feed events; not yet enforced by the engine. |
 | `sleep_start_hour` | `23` | Hour-of-day (UTC, 0–23) the pet's nightly sleep window begins. |
 | `wake_hour` | `7` | Hour-of-day (UTC, 0–23) the pet wakes up. Correctly handles windows crossing midnight. |
 | `poop_interval_commands` | `40` | Pet poops once every N commands fed to it (a running counter, NOT time-based). |
@@ -221,8 +220,6 @@ test) on every push/PR against `x86_64-unknown-linux-gnu`.
 
 - `shellagotchi hatch` / pet revival after death is not implemented (see
   FAQ above).
-- `max_feeds_per_min` is defined in config but not yet enforced by the
-  engine.
 - systemd's `sd-notify`/watchdog integration was considered in the design
   doc but dropped for simplicity — the shipped unit is a plain
   `Type=simple` service.

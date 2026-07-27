@@ -1,0 +1,7 @@
+# Enforced project rule (see plan Task 5): no direct wall-clock reads outside
+# the Clock trait / SystemClock implementation. This keeps engine logic
+# deterministically testable via FakeClock.
+disallowed-methods = [
+    { path = "chrono::Utc::now", reason = "use the injected Clock trait (src/clock.rs) instead of reading wall-clock time directly" },
+    { path = "chrono::Local::now", reason = "use the injected Clock trait (src/clock.rs) instead of reading wall-clock time directly" },
+]

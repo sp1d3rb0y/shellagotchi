@@ -52,6 +52,10 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Launch a live, interactively-updating terminal UI showing the
+    /// pet's sprite, mood, and stat gauges, polling the daemon in the
+    /// background. Keybinds: q=quit, c=clean, p=pet, r=refresh.
+    Watch,
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -74,6 +78,12 @@ async fn main() {
         }
         Commands::Status { json } | Commands::Show { json } => {
             if let Err(err) = status(json).await {
+                eprintln!("{err}");
+                std::process::exit(1);
+            }
+        }
+        Commands::Watch => {
+            if let Err(err) = crate::render::tui::run().await {
                 eprintln!("{err}");
                 std::process::exit(1);
             }

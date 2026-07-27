@@ -5,3 +5,4 @@
 pub mod card;
 pub mod prompt;
 pub mod sprites;
+pub mod tui;

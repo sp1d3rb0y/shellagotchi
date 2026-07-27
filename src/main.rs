@@ -82,6 +82,20 @@ enum Commands {
     /// Write the systemd user unit file and, if a systemd user session
     /// is available, enable + start the daemon via it.
     Install,
+    /// Generate the man page (troff, `clap_mangen`) to stdout. Hidden:
+    /// this is a packaging-time helper (`shellagotchi gen-man >
+    /// man/shellagotchi.1`), not a user-facing feature.
+    #[command(hide = true)]
+    GenMan,
+    /// Generate a shell completion script for `shell` (`clap_complete`)
+    /// to stdout. Hidden: this is a packaging-time helper
+    /// (`shellagotchi gen-completions bash > completions/shellagotchi.bash`),
+    /// not a user-facing feature.
+    #[command(hide = true)]
+    GenCompletions {
+        #[arg(value_enum)]
+        shell: clap_complete::Shell,
+    },
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -142,7 +156,42 @@ async fn main() {
                 std::process::exit(1);
             }
         }
+        Commands::GenMan => {
+            gen_man();
+        }
+        Commands::GenCompletions { shell } => {
+            gen_completions(shell);
+        }
     }
+}
+
+/// Renders the man page for the whole CLI (all subcommands) via
+/// `clap_mangen` and prints the raw troff source to stdout. Intended to
+/// be redirected to `man/shellagotchi.1` at packaging time, e.g.
+/// `shellagotchi gen-man > man/shellagotchi.1`.
+fn gen_man() {
+    let cmd = <Cli as clap::CommandFactory>::command();
+    let man = clap_mangen::Man::new(cmd);
+    let mut buf: Vec<u8> = Vec::new();
+    if let Err(err) = man.render(&mut buf) {
+        eprintln!("failed to render man page: {err}");
+        std::process::exit(1);
+    }
+    use std::io::Write;
+    if let Err(err) = std::io::stdout().write_all(&buf) {
+        eprintln!("failed to write man page to stdout: {err}");
+        std::process::exit(1);
+    }
+}
+
+/// Renders a shell completion script for `shell` via `clap_complete`
+/// and prints it to stdout. Intended to be redirected to
+/// `completions/shellagotchi.<shell>` at packaging time, e.g.
+/// `shellagotchi gen-completions bash > completions/shellagotchi.bash`.
+fn gen_completions(shell: clap_complete::Shell) {
+    let mut cmd = <Cli as clap::CommandFactory>::command();
+    let name = cmd.get_name().to_string();
+    clap_complete::generate(shell, &mut cmd, name, &mut std::io::stdout());
 }
 
 /// Runs all diagnostic checks and prints a human-readable report to
@@ -379,6 +428,15 @@ fn print_prompt(format: &str) {
 /// returns without printing anything to stdout/stderr; `main` always
 /// exits 0 for this subcommand.
 async fn feed(exit_code: i32, duration_ms: u64) {
+    // Escape hatch: if the user has set SHELLAGOTCHI_DISABLE (to any
+    // value), short-circuit immediately without touching the socket at
+    // all. This lets someone temporarily silence shellagotchi (e.g. for
+    // a screen share, or while debugging shell startup) just by
+    // exporting the var, with zero daemon/config involvement.
+    if std::env::var("SHELLAGOTCHI_DISABLE").is_ok() {
+        return;
+    }
+
     let argv0 = std::env::var("SHELLAGOTCHI_ARGV0").unwrap_or_default();
     let ts = SystemClock.now().timestamp();
 

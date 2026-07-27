@@ -1,0 +1,43 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH shellagotchi 1  "shellagotchi " 
+.SH NAME
+shellagotchi
+.SH SYNOPSIS
+\fBshellagotchi\fR [\fB\-h\fR|\fB\-\-help\fR] <\fIsubcommands\fR>
+.SH DESCRIPTION
+.SH OPTIONS
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help
+.SH SUBCOMMANDS
+.TP
+shellagotchi\-feed(1)
+Report a command\*(Aqs exit status to the daemon (used by the shell hook)
+.TP
+shellagotchi\-daemon(1)
+Run the shellagotchi daemon (the process the shell hook and CLI subcommands talk to over a Unix socket)
+.TP
+shellagotchi\-prompt(1)
+Print a rendered prompt segment, reading ONLY the prompt cache file the daemon maintains (never the IPC socket). This makes it safe and fast enough to embed directly in a shell `PS1`
+.TP
+shellagotchi\-status(1)
+Show the pet\*(Aqs current status as a bordered ASCII card, fetched live from the daemon over IPC
+.TP
+shellagotchi\-show(1)
+Alias for `status` (the plan treats `show` and `status` as the same command)
+.TP
+shellagotchi\-watch(1)
+Launch a live, interactively\-updating terminal UI showing the pet\*(Aqs sprite, mood, and stat gauges, polling the daemon in the background. Keybinds: q=quit, c=clean, p=pet, r=refresh
+.TP
+shellagotchi\-init(1)
+Print the shell integration snippet for `shell` to stdout, meant to be evaluated/sourced directly into an rc file, e.g. `eval "$(shellagotchi init bash)"` in `~/.bashrc`. Prints *exactly* the snippet with no extra logging, since the caller feeds stdout straight into `eval`/`source`
+.TP
+shellagotchi\-doctor(1)
+Run diagnostic checks (config, socket, daemon, rc\-file hooks) and print a human\-readable report. Exits non\-zero if any check fails
+.TP
+shellagotchi\-install(1)
+Write the systemd user unit file and, if a systemd user session is available, enable + start the daemon via it
+.TP
+shellagotchi\-help(1)
+Print this message or the help of the given subcommand(s)

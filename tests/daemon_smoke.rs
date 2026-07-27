@@ -55,3 +55,71 @@ fn daemon_starts_binds_socket_and_answers_feed() {
     let _ = daemon.kill();
     let _ = daemon.wait();
 }
+
+#[test]
+fn feed_with_disable_env_never_reaches_daemon() {
+    // SHELLAGOTCHI_DISABLE must short-circuit `feed` before it even
+    // opens the socket, so a live daemon's state is untouched.
+    let dir = tempfile::tempdir().unwrap();
+    let runtime_dir = dir.path().join("runtime");
+    std::fs::create_dir_all(&runtime_dir).unwrap();
+    let socket_path = runtime_dir.join("shellagotchi").join("sock");
+
+    let bin = assert_cmd::cargo::cargo_bin("shellagotchi");
+
+    let mut daemon = StdCommand::new(&bin)
+        .arg("daemon")
+        .env("XDG_RUNTIME_DIR", &runtime_dir)
+        .spawn()
+        .expect("failed to spawn daemon subprocess");
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !socket_path.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(
+        socket_path.exists(),
+        "daemon did not create its socket file within the timeout"
+    );
+
+    let status_before = StdCommand::new(&bin)
+        .args(["status", "--json"])
+        .env("XDG_RUNTIME_DIR", &runtime_dir)
+        .output()
+        .expect("failed to spawn status subprocess");
+    assert!(status_before.status.success());
+
+    let feed_status = StdCommand::new(&bin)
+        .args(["feed", "--exit", "0", "--duration", "10"])
+        .env("XDG_RUNTIME_DIR", &runtime_dir)
+        .env("SHELLAGOTCHI_DISABLE", "1")
+        .status()
+        .expect("failed to spawn feed subprocess");
+    assert!(
+        feed_status.success(),
+        "feed subprocess must still exit 0 when disabled"
+    );
+
+    let status_after = StdCommand::new(&bin)
+        .args(["status", "--json"])
+        .env("XDG_RUNTIME_DIR", &runtime_dir)
+        .output()
+        .expect("failed to spawn status subprocess");
+    assert!(status_after.status.success());
+
+    // Compare only `commands_eaten` (not the whole JSON blob) since
+    // `last_tick` legitimately advances between the two status calls
+    // even with no feed applied.
+    let commands_eaten = |bytes: &[u8]| -> u64 {
+        let value: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+        value["commands_eaten"].as_u64().unwrap()
+    };
+    assert_eq!(
+        commands_eaten(&status_before.stdout),
+        commands_eaten(&status_after.stdout),
+        "commands_eaten must be unchanged when SHELLAGOTCHI_DISABLE is set"
+    );
+
+    let _ = daemon.kill();
+    let _ = daemon.wait();
+}

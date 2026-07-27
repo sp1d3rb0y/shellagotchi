@@ -31,6 +31,9 @@ _shellagotchi() {
             shellagotchi,gen-man)
                 cmd="shellagotchi__subcmd__gen__subcmd__man"
                 ;;
+            shellagotchi,hatch)
+                cmd="shellagotchi__subcmd__hatch"
+                ;;
             shellagotchi,help)
                 cmd="shellagotchi__subcmd__help"
                 ;;
@@ -67,6 +70,9 @@ _shellagotchi() {
             shellagotchi__subcmd__help,gen-man)
                 cmd="shellagotchi__subcmd__help__subcmd__gen__subcmd__man"
                 ;;
+            shellagotchi__subcmd__help,hatch)
+                cmd="shellagotchi__subcmd__help__subcmd__hatch"
+                ;;
             shellagotchi__subcmd__help,help)
                 cmd="shellagotchi__subcmd__help__subcmd__help"
                 ;;
@@ -95,7 +101,7 @@ _shellagotchi() {
 
     case "${cmd}" in
         shellagotchi)
-            opts="-h --help feed daemon prompt status show watch init doctor install gen-man gen-completions help"
+            opts="-h --help feed daemon prompt status show watch init doctor install hatch gen-man gen-completions help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 1 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -186,8 +192,26 @@ _shellagotchi() {
             COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
             return 0
             ;;
+        shellagotchi__subcmd__hatch)
+            opts="-h --species --help"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                --species)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
         shellagotchi__subcmd__help)
-            opts="feed daemon prompt status show watch init doctor install gen-man gen-completions help"
+            opts="feed daemon prompt status show watch init doctor install hatch gen-man gen-completions help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -257,6 +281,20 @@ _shellagotchi() {
             return 0
             ;;
         shellagotchi__subcmd__help__subcmd__gen__subcmd__man)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        shellagotchi__subcmd__help__subcmd__hatch)
             opts=""
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )

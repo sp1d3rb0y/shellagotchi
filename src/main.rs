@@ -82,6 +82,17 @@ enum Commands {
     /// Write the systemd user unit file and, if a systemd user session
     /// is available, enable + start the daemon via it.
     Install,
+    /// Replace a dead pet with a brand-new newborn one. Only works while
+    /// the current pet is actually dead (health reached 0); the old
+    /// pet's final state is archived to the graveyard log before the
+    /// new one is created.
+    Hatch {
+        /// Species for the new pet: blob, cat, dragon, or ghost. Omit
+        /// (or pass an unrecognized name) to pick one uniformly at
+        /// random.
+        #[arg(long)]
+        species: Option<String>,
+    },
     /// Generate the man page (troff, `clap_mangen`) to stdout. Hidden:
     /// this is a packaging-time helper (`shellagotchi gen-man >
     /// man/shellagotchi.1`), not a user-facing feature.
@@ -152,6 +163,12 @@ async fn main() {
         }
         Commands::Install => {
             if let Err(err) = crate::daemon::install::install() {
+                eprintln!("{err}");
+                std::process::exit(1);
+            }
+        }
+        Commands::Hatch { species } => {
+            if let Err(err) = hatch(species).await {
                 eprintln!("{err}");
                 std::process::exit(1);
             }
@@ -353,6 +370,43 @@ async fn status(json: bool) -> anyhow::Result<()> {
             crate::render::card::render_card(&state, now, no_color)
         );
     }
+
+    Ok(())
+}
+
+/// Asks the daemon to replace a dead pet with a brand-new newborn one.
+///
+/// Like `status`, this is explicit/interactive: failures (daemon
+/// unreachable, or the daemon reporting the pet is still alive) are
+/// printed clearly and result in a non-zero exit rather than failing
+/// silently.
+async fn hatch(species: Option<String>) -> anyhow::Result<()> {
+    let socket_path = crate::paths::socket_path();
+    let req = Request::new(RequestOp::Hatch {
+        species: species.unwrap_or_default(),
+    });
+
+    let response = send_request(&socket_path, &req).await.map_err(|err| {
+        anyhow::anyhow!(
+            "could not reach the shellagotchi daemon ({err}). Is it running? Try `shellagotchi daemon`."
+        )
+    })?;
+
+    if !response.ok {
+        let message = response
+            .error
+            .unwrap_or_else(|| "daemon returned an error with no message".to_string());
+        anyhow::bail!("{message}");
+    }
+
+    let state = response
+        .state
+        .ok_or_else(|| anyhow::anyhow!("daemon's hatch response was missing pet state"))?;
+
+    println!(
+        "a new {:?} pet named \"{}\" has hatched!",
+        state.species, state.name
+    );
 
     Ok(())
 }

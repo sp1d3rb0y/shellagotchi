@@ -419,6 +419,20 @@ pub fn clean(state: &mut PetState) -> Vec<Event> {
     Vec::new()
 }
 
+/// Produces a brand-new newborn pet, replacing a dead one.
+///
+/// This is a thin wrapper around [`PetState::newborn`] rather than a call
+/// site inlining it directly, so that "how a pet comes into existence"
+/// stays a single, auditable engine-level concern alongside `feed`/`tick`/
+/// `clean` -- callers (the IPC server) are responsible for the *policy*
+/// question of when hatching is allowed (only once the previous pet is
+/// dead) and for archiving the old state; this function only knows how to
+/// construct the new one.
+#[allow(dead_code)]
+pub fn hatch(name: String, species: crate::pet::state::Species, now: DateTime<Utc>) -> PetState {
+    PetState::newborn(name, species, now)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1288,5 +1302,21 @@ mod tests {
         catch_up(&mut state, start, &cfg, &mut rng);
 
         assert_eq!(state, before);
+    }
+
+    #[test]
+    fn hatch_produces_a_fresh_newborn() {
+        let now = fixed_now();
+        let hatched = hatch("Rusty".into(), Species::Dragon, now);
+
+        assert_eq!(
+            hatched,
+            PetState::newborn("Rusty".into(), Species::Dragon, now)
+        );
+        assert!(hatched.alive);
+        assert_eq!(hatched.activity, Activity::Awake);
+        assert_eq!(hatched.satiety.get(), 70);
+        assert_eq!(hatched.health.get(), 100);
+        assert!(hatched.poops.is_empty());
     }
 }

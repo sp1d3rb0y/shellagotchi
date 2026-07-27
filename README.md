@@ -103,6 +103,7 @@ below).
 | `shellagotchi init <bash\|zsh\|fish>` | `--with-clean-alias` | Prints the shell integration snippet for the given shell to stdout (nothing else — meant to be piped straight into `eval`/`source`). `--with-clean-alias` additionally emits an explicit `clean()` wrapper function (bash/zsh only; ignored with a warning on fish, since fish's argv0-detection cleanup needs no wrapper). |
 | `shellagotchi doctor` | — | Runs diagnostic checks (binary location, config parses, state dir writable, socket exists, daemon responds to ping, prompt cache present, rc-file hooks found) and prints a `[OK]`/`[FAIL]` report. Exits non-zero if any check fails. |
 | `shellagotchi install` | — | Writes the systemd user unit file (`~/.config/systemd/user/shellagotchi.service`) and, if a systemd user session is available, enables + starts it. Never runs `loginctl enable-linger` automatically. |
+| `shellagotchi hatch` | `--species <blob\|cat\|dragon\|ghost>` (optional) | Replaces a dead pet with a brand-new newborn one, archiving the old pet's final state to `~/.local/state/shellagotchi/graveyard.jsonl` first. Only works while the current pet is actually dead — errors (non-zero exit) if it's still alive. Omit `--species` (or pass an unrecognized name) to pick one uniformly at random. |
 
 Two additional hidden/internal subcommands exist purely for packaging
 (not meant for interactive use, and not shown in `--help`):
@@ -158,17 +159,16 @@ its `Default` impl:
 ## FAQ
 
 **Why is my pet dead, and how do I bring it back?**
-Health reached 0 and its activity flipped to `Dead`. **Reviving/hatching a
-new pet is not yet implemented** — the daemon's `Hatch` IPC op exists in
-the wire protocol but its handler currently just returns
-`"not implemented yet"` (see `src/daemon/ipc/server.rs`), and there's no
-`shellagotchi hatch` CLI subcommand at all yet. `feed` still succeeds
+Health reached 0 and its activity flipped to `Dead`. Run `shellagotchi
+hatch` to replace it with a brand-new newborn pet — the old pet's final
+state is archived to `~/.local/state/shellagotchi/graveyard.jsonl` (an
+append-only JSON-lines log) first. `hatch` only works while the current
+pet is actually dead; it refuses (non-zero exit, clear error) if the pet
+is still alive, so you can't accidentally reset a healthy pet. Pass
+`--species blob|cat|dragon|ghost` to choose one, or omit it (or pass an
+unrecognized name) to get one uniformly at random. `feed` still succeeds
 silently against a dead pet (per its "never break the shell" contract),
-but a dead pet's stats no longer meaningfully change. The current
-workaround to start over: stop the daemon, delete
-`~/.local/state/shellagotchi/pet.json`, and restart the daemon — it will
-generate a fresh newborn pet. Genuine hatch/revive support is tracked as
-future work.
+it just won't do anything until you hatch a new one.
 
 **How do I disable it temporarily?**
 Set `SHELLAGOTCHI_DISABLE` (to any value) in the environment before a
@@ -218,8 +218,8 @@ test) on every push/PR against `x86_64-unknown-linux-gnu`.
 
 ## Known gaps / future work
 
-- `shellagotchi hatch` / pet revival after death is not implemented (see
-  FAQ above).
+- Species/skin sets for `hatch` are purely cosmetic — no stat/behavior
+  differences between blob/cat/dragon/ghost yet.
 
 ## Design
 

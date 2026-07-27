@@ -46,6 +46,14 @@ pub fn state_file_path() -> PathBuf {
     state_dir().join("pet.json")
 }
 
+/// Returns the path to the graveyard log: an append-only JSON-lines file
+/// recording every pet that has died and been replaced via `hatch`, kept
+/// for the user's own curiosity/history rather than for any functional
+/// purpose.
+pub fn graveyard_path() -> PathBuf {
+    state_dir().join("graveyard.jsonl")
+}
+
 /// Returns the runtime directory, preferring `$XDG_RUNTIME_DIR` if set.
 pub fn runtime_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("XDG_RUNTIME_DIR") {

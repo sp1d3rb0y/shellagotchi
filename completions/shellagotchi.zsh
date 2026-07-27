@@ -87,6 +87,13 @@ _arguments "${_arguments_options[@]}" : \
 '--help[Print help]' \
 && ret=0
 ;;
+(hatch)
+_arguments "${_arguments_options[@]}" : \
+'--species=[Species for the new pet\: blob, cat, dragon, or ghost. Omit (or pass an unrecognized name) to pick one uniformly at random]:SPECIES:_default' \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
 (gen-man)
 _arguments "${_arguments_options[@]}" : \
 '-h[Print help]' \
@@ -148,6 +155,10 @@ _arguments "${_arguments_options[@]}" : \
 _arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
+(hatch)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
 (gen-man)
 _arguments "${_arguments_options[@]}" : \
 && ret=0
@@ -181,6 +192,7 @@ _shellagotchi_commands() {
 'init:Print the shell integration snippet for \`shell\` to stdout, meant to be evaluated/sourced directly into an rc file, e.g. \`eval "\$(shellagotchi init bash)"\` in \`~/.bashrc\`. Prints *exactly* the snippet with no extra logging, since the caller feeds stdout straight into \`eval\`/\`source\`' \
 'doctor:Run diagnostic checks (config, socket, daemon, rc-file hooks) and print a human-readable report. Exits non-zero if any check fails' \
 'install:Write the systemd user unit file and, if a systemd user session is available, enable + start the daemon via it' \
+'hatch:Replace a dead pet with a brand-new newborn one. Only works while the current pet is actually dead (health reached 0); the old pet'\''s final state is archived to the graveyard log before the new one is created' \
 'gen-man:Generate the man page (troff, \`clap_mangen\`) to stdout. Hidden\: this is a packaging-time helper (\`shellagotchi gen-man > man/shellagotchi.1\`), not a user-facing feature' \
 'gen-completions:Generate a shell completion script for \`shell\` (\`clap_complete\`) to stdout. Hidden\: this is a packaging-time helper (\`shellagotchi gen-completions bash > completions/shellagotchi.bash\`), not a user-facing feature' \
 'help:Print this message or the help of the given subcommand(s)' \
@@ -212,6 +224,11 @@ _shellagotchi__subcmd__gen-man_commands() {
     local commands; commands=()
     _describe -t commands 'shellagotchi gen-man commands' commands "$@"
 }
+(( $+functions[_shellagotchi__subcmd__hatch_commands] )) ||
+_shellagotchi__subcmd__hatch_commands() {
+    local commands; commands=()
+    _describe -t commands 'shellagotchi hatch commands' commands "$@"
+}
 (( $+functions[_shellagotchi__subcmd__help_commands] )) ||
 _shellagotchi__subcmd__help_commands() {
     local commands; commands=(
@@ -224,6 +241,7 @@ _shellagotchi__subcmd__help_commands() {
 'init:Print the shell integration snippet for \`shell\` to stdout, meant to be evaluated/sourced directly into an rc file, e.g. \`eval "\$(shellagotchi init bash)"\` in \`~/.bashrc\`. Prints *exactly* the snippet with no extra logging, since the caller feeds stdout straight into \`eval\`/\`source\`' \
 'doctor:Run diagnostic checks (config, socket, daemon, rc-file hooks) and print a human-readable report. Exits non-zero if any check fails' \
 'install:Write the systemd user unit file and, if a systemd user session is available, enable + start the daemon via it' \
+'hatch:Replace a dead pet with a brand-new newborn one. Only works while the current pet is actually dead (health reached 0); the old pet'\''s final state is archived to the graveyard log before the new one is created' \
 'gen-man:Generate the man page (troff, \`clap_mangen\`) to stdout. Hidden\: this is a packaging-time helper (\`shellagotchi gen-man > man/shellagotchi.1\`), not a user-facing feature' \
 'gen-completions:Generate a shell completion script for \`shell\` (\`clap_complete\`) to stdout. Hidden\: this is a packaging-time helper (\`shellagotchi gen-completions bash > completions/shellagotchi.bash\`), not a user-facing feature' \
 'help:Print this message or the help of the given subcommand(s)' \
@@ -254,6 +272,11 @@ _shellagotchi__subcmd__help__subcmd__gen-completions_commands() {
 _shellagotchi__subcmd__help__subcmd__gen-man_commands() {
     local commands; commands=()
     _describe -t commands 'shellagotchi help gen-man commands' commands "$@"
+}
+(( $+functions[_shellagotchi__subcmd__help__subcmd__hatch_commands] )) ||
+_shellagotchi__subcmd__help__subcmd__hatch_commands() {
+    local commands; commands=()
+    _describe -t commands 'shellagotchi help hatch commands' commands "$@"
 }
 (( $+functions[_shellagotchi__subcmd__help__subcmd__help_commands] )) ||
 _shellagotchi__subcmd__help__subcmd__help_commands() {

@@ -17,6 +17,26 @@ pub enum Species {
     Ghost,
 }
 
+impl std::str::FromStr for Species {
+    type Err = String;
+
+    /// Parses a species name (case-insensitive). `"random"` and the empty
+    /// string are treated as "no preference" and yield `Err`, letting the
+    /// caller decide how to pick one (e.g. uniformly at random) rather
+    /// than baking randomness into a supposedly-pure parser.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "blob" => Ok(Species::Blob),
+            "cat" => Ok(Species::Cat),
+            "dragon" => Ok(Species::Dragon),
+            "ghost" => Ok(Species::Ghost),
+            other => Err(format!(
+                "unknown species: {other} (expected blob, cat, dragon, or ghost)"
+            )),
+        }
+    }
+}
+
 /// The current activity/state of a pet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -101,6 +121,21 @@ mod tests {
     /// project-wide, including test code, so behaviour stays reproducible).
     fn fixed_now() -> DateTime<Utc> {
         Utc.with_ymd_and_hms(2026, 1, 1, 12, 0, 0).unwrap()
+    }
+
+    #[test]
+    fn species_from_str_accepts_known_names_case_insensitively() {
+        assert_eq!("blob".parse::<Species>().unwrap(), Species::Blob);
+        assert_eq!("CAT".parse::<Species>().unwrap(), Species::Cat);
+        assert_eq!("Dragon".parse::<Species>().unwrap(), Species::Dragon);
+        assert_eq!("ghost".parse::<Species>().unwrap(), Species::Ghost);
+    }
+
+    #[test]
+    fn species_from_str_rejects_unknown_or_random() {
+        assert!("random".parse::<Species>().is_err());
+        assert!("".parse::<Species>().is_err());
+        assert!("dinosaur".parse::<Species>().is_err());
     }
 
     #[test]

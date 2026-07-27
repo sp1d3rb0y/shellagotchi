@@ -21,6 +21,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use chrono::DateTime;
+use rand::seq::IndexedRandom;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 
@@ -158,13 +159,61 @@ pub fn handle_request(state: &ServerState, req: &Request) -> Response {
             };
             Response::ok_prompt(rendered)
         }
-        RequestOp::Hatch { species: _ } => {
-            // Hatch/death-recovery UX is later plan territory -- not
-            // implemented yet.
-            Response::err("not implemented yet")
+        RequestOp::Hatch { species } => {
+            let mut pet = state.pet.lock().unwrap();
+            let mut rng = rand::rng();
+            engine::catch_up(&mut pet, now, &state.config, &mut rng);
+
+            if pet.alive {
+                return Response::err("pet is still alive; hatch is only for reviving a dead pet");
+            }
+
+            archive_to_graveyard(&pet, &crate::paths::graveyard_path());
+
+            let chosen_species = species
+                .parse()
+                .unwrap_or_else(|_| *SPECIES_POOL.choose(&mut rng).expect("non-empty"));
+            *pet = engine::hatch(state.config.pet_name.clone(), chosen_species, now);
+
+            persist(state, &pet);
+            Response::ok_state(pet.clone())
         }
         RequestOp::Unknown => Response::err("unsupported op"),
     }
+}
+
+/// The species a freshly-hatched pet may be assigned when the caller
+/// didn't request a specific one (or requested an unrecognized name).
+const SPECIES_POOL: [crate::pet::state::Species; 4] = [
+    crate::pet::state::Species::Blob,
+    crate::pet::state::Species::Cat,
+    crate::pet::state::Species::Dragon,
+    crate::pet::state::Species::Ghost,
+];
+
+/// Best-effort appends `pet` (expected to be the just-superseded, dead
+/// pet) as one JSON line to the append-only graveyard log at `path`.
+/// Failures are logged but never propagated -- losing the graveyard
+/// history must never block a hatch.
+fn archive_to_graveyard(pet: &PetState, path: &Path) {
+    if let Err(err) = archive_to_graveyard_inner(pet, path) {
+        tracing::warn!("failed to append to graveyard log at {:?}: {err}", path);
+    }
+}
+
+fn archive_to_graveyard_inner(pet: &PetState, path: &Path) -> std::io::Result<()> {
+    use std::io::Write;
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    let line = serde_json::to_string(pet)?;
+    writeln!(file, "{line}")?;
+    Ok(())
 }
 
 /// Binds a Unix domain socket at `socket_path`, sets its permissions to
@@ -366,7 +415,7 @@ mod tests {
     }
 
     #[test]
-    fn handle_request_hatch_still_returns_not_implemented() {
+    fn handle_request_hatch_rejects_a_still_alive_pet() {
         let (state, _dir) = new_state();
         let req = Request::new(RequestOp::Hatch {
             species: "blob".into(),
@@ -375,8 +424,91 @@ mod tests {
         let resp = handle_request(&state, &req);
 
         assert!(!resp.ok);
-        assert!(resp.error.is_some());
-        assert!(!resp.error.unwrap().is_empty());
+        assert!(
+            resp.error.unwrap().contains("still alive"),
+            "expected an error explaining the pet is still alive"
+        );
+        // The pet must be untouched -- still the original, still alive.
+        assert!(state.pet.lock().unwrap().alive);
+    }
+
+    #[test]
+    fn handle_request_hatch_revives_a_dead_pet_with_requested_species() {
+        let (state, _dir) = new_state();
+        state.pet.lock().unwrap().alive = false;
+        state.pet.lock().unwrap().activity = crate::pet::state::Activity::Dead;
+
+        let req = Request::new(RequestOp::Hatch {
+            species: "dragon".into(),
+        });
+        let resp = handle_request(&state, &req);
+
+        assert!(resp.ok, "expected hatch to succeed on a dead pet");
+        let returned_state = resp.state.expect("hatch response should carry the state");
+        assert!(returned_state.alive);
+        assert_eq!(returned_state.species, Species::Dragon);
+        assert_eq!(returned_state.activity, crate::pet::state::Activity::Awake);
+        assert_eq!(returned_state.satiety.get(), 70);
+        assert!(returned_state.poops.is_empty());
+
+        let pet = state.pet.lock().unwrap();
+        assert!(pet.alive);
+        assert_eq!(pet.species, Species::Dragon);
+    }
+
+    #[test]
+    fn handle_request_hatch_unknown_species_falls_back_to_random() {
+        let (state, _dir) = new_state();
+        state.pet.lock().unwrap().alive = false;
+
+        let req = Request::new(RequestOp::Hatch {
+            species: "not-a-real-species".into(),
+        });
+        let resp = handle_request(&state, &req);
+
+        assert!(resp.ok, "an unrecognized species should not fail hatch");
+        assert!(resp.state.unwrap().alive);
+    }
+
+    #[test]
+    fn handle_request_hatch_empty_species_picks_random() {
+        let (state, _dir) = new_state();
+        state.pet.lock().unwrap().alive = false;
+
+        let req = Request::new(RequestOp::Hatch {
+            species: String::new(),
+        });
+        let resp = handle_request(&state, &req);
+
+        assert!(resp.ok);
+        assert!(resp.state.unwrap().alive);
+    }
+
+    #[test]
+    fn handle_request_hatch_archives_the_dead_pet_to_the_graveyard() {
+        let (state, dir) = new_state();
+        {
+            let mut pet = state.pet.lock().unwrap();
+            pet.alive = false;
+            pet.name = "OldPet".into();
+        }
+        let graveyard_path = dir.path().join("graveyard.jsonl");
+
+        // Point the graveyard at our tempdir by calling the archive helper
+        // directly with the same path handle used elsewhere in these
+        // tests -- `handle_request` itself always resolves the REAL XDG
+        // graveyard path via `crate::paths::graveyard_path()`, which isn't
+        // test-isolated, so we verify the lower-level archive function
+        // (the actual mechanism `handle_request` calls) instead of trying
+        // to intercept the real path.
+        let pet_snapshot = state.pet.lock().unwrap().clone();
+        archive_to_graveyard(&pet_snapshot, &graveyard_path);
+
+        let contents = std::fs::read_to_string(&graveyard_path).unwrap();
+        assert!(contents.contains("OldPet"));
+        let parsed: PetState = serde_json::from_str(contents.trim()).unwrap();
+        assert_eq!(parsed.name, "OldPet");
+        assert!(!parsed.alive);
     }
 
     #[test]

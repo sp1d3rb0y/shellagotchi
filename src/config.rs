@@ -16,6 +16,9 @@ pub struct Config {
     pub wake_hour: u32,
     pub poop_interval_commands: u32,
     pub unicode: bool,
+    pub junk_food_commands: Vec<String>,
+    pub ignored_exit_codes: Vec<i32>,
+    pub bad_food_meter_decay_per_hour: u32,
 }
 
 impl Default for Config {
@@ -28,6 +31,14 @@ impl Default for Config {
             wake_hour: 7,
             poop_interval_commands: 40,
             unicode: true,
+            junk_food_commands: vec![
+                "rm".to_string(),
+                "kill".to_string(),
+                "pkill".to_string(),
+                "dd".to_string(),
+            ],
+            ignored_exit_codes: vec![130],
+            bad_food_meter_decay_per_hour: 1,
         }
     }
 }

@@ -12,6 +12,7 @@
 //! pooping, and sickness logic, and will grow the `Event` enum accordingly.
 
 use chrono::{DateTime, Duration, Timelike, Utc};
+use rand::RngExt;
 
 use crate::config::Config;
 use crate::pet::state::{Activity, PetState};
@@ -21,6 +22,15 @@ use crate::pet::state::{Activity, PetState};
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[allow(dead_code)]
 pub enum Event {}
+
+/// A single shell command completion, fed to [`feed`] to update the pet's
+/// stats. One `FeedEvent` corresponds to one shell command's exit.
+#[allow(dead_code)]
+pub struct FeedEvent<'a> {
+    pub exit_code: i32,
+    pub argv0: &'a str,
+    pub now: DateTime<Utc>,
+}
 
 /// Per-hour decay rates for time-based stat loss.
 #[allow(dead_code)]
@@ -116,12 +126,84 @@ pub fn tick(state: &mut PetState, now: DateTime<Utc>, cfg: &Config) -> Vec<Event
     Vec::new()
 }
 
+// TODO(future task): implement max_feeds_per_min rate limiting via a
+// timestamp ring buffer in PetState (requires a new state field to track
+// recent feed timestamps, which is out of scope for this task).
+
+/// Processes a single shell command's exit as a "feeding" event, updating
+/// satiety/happiness/streaks and rolling the "bad food" sickness risk.
+///
+/// Pure like [`tick`]: never reads the clock itself; `event.now` is supplied
+/// by the caller. `rng` must be supplied by the caller for deterministic,
+/// testable sickness rolls.
+#[allow(dead_code)]
+pub fn feed(
+    state: &mut PetState,
+    event: FeedEvent,
+    cfg: &Config,
+    rng: &mut impl rand::Rng,
+) -> Vec<Event> {
+    if !state.alive {
+        return Vec::new();
+    }
+
+    // Commands issued while Asleep don't feed the pet at all. Per the
+    // design, they should eventually contribute to a `sleep_disturbance`
+    // stat, but that field doesn't exist yet — deferred to a later task.
+    if state.activity == Activity::Asleep {
+        return Vec::new();
+    }
+
+    if cfg.ignored_exit_codes.contains(&event.exit_code) {
+        // Neutral command (e.g. Ctrl-C / SIGINT): still "a command", but no
+        // nutrition, streak, or bad-food effects.
+        state.commands_eaten += 1;
+        return Vec::new();
+    }
+
+    state.commands_eaten += 1;
+
+    if event.exit_code == 0 {
+        // Good food: small satiety/happiness gains, builds a success streak.
+        state.satiety = state.satiety + 2;
+        state.happiness = state.happiness + 1;
+        state.success_streak += 1;
+        state.failure_streak = 0;
+
+        if state.success_streak.is_multiple_of(10) {
+            state.happiness = state.happiness + 5;
+        }
+    } else {
+        // Bad food: more filling, but risks sickness via bad_food_meter.
+        state.satiety = state.satiety + 3;
+        state.failure_streak += 1;
+        state.success_streak = 0;
+        state.bad_food_meter += 1;
+
+        let p = (0.05 * state.bad_food_meter as f64).min(0.5);
+        if rng.random_bool(p) {
+            state.health = state.health - 10;
+            state.happiness = state.happiness - 2;
+            state.activity = Activity::Sick;
+        }
+    }
+
+    if cfg.junk_food_commands.iter().any(|c| c == event.argv0) {
+        // Junk food is always a bit risky, regardless of exit code.
+        state.bad_food_meter += 1;
+    }
+
+    Vec::new()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::pet::state::{Activity, Species};
     use crate::pet::stats::Stat;
     use chrono::TimeZone;
+    use rand::SeedableRng;
+    use rand::rngs::StdRng;
 
     /// A fixed, deterministic timestamp for tests. Tests must never call
     /// `Utc::now()`/`Local::now()` directly (clippy.toml disallows it
@@ -287,5 +369,205 @@ mod tests {
         tick(&mut state, start + Duration::minutes(5), &cfg);
 
         assert_eq!(state.activity, Activity::Asleep);
+    }
+
+    fn default_cfg_for_feed() -> Config {
+        Config::default()
+    }
+
+    #[test]
+    fn feed_success_increases_satiety_and_happiness() {
+        let mut state = PetState::newborn("T".into(), Species::Blob, fixed_now());
+        let cfg = default_cfg_for_feed();
+        let mut rng = StdRng::seed_from_u64(0);
+
+        feed(
+            &mut state,
+            FeedEvent {
+                exit_code: 0,
+                argv0: "cargo",
+                now: fixed_now(),
+            },
+            &cfg,
+            &mut rng,
+        );
+
+        assert_eq!(state.satiety.get(), 72);
+        assert_eq!(state.happiness.get(), 71);
+        assert_eq!(state.success_streak, 1);
+        assert_eq!(state.failure_streak, 0);
+        assert_eq!(state.commands_eaten, 1);
+        assert_eq!(state.bad_food_meter, 0);
+    }
+
+    #[test]
+    fn feed_ten_success_streak_gives_bonus() {
+        let mut state = PetState::newborn("T".into(), Species::Blob, fixed_now());
+        let cfg = default_cfg_for_feed();
+        let mut rng = StdRng::seed_from_u64(0);
+
+        for _ in 0..10 {
+            feed(
+                &mut state,
+                FeedEvent {
+                    exit_code: 0,
+                    argv0: "cargo",
+                    now: fixed_now(),
+                },
+                &cfg,
+                &mut rng,
+            );
+        }
+
+        assert_eq!(state.success_streak, 10);
+        assert_eq!(state.happiness.get(), 70 + 10 + 5);
+    }
+
+    #[test]
+    fn feed_failure_raises_satiety_more_and_bumps_bad_food_meter() {
+        let mut state = PetState::newborn("T".into(), Species::Blob, fixed_now());
+        let cfg = default_cfg_for_feed();
+        // Seed 0 chosen to not trigger the sickness roll at bad_food_meter=1
+        // (p = 0.05), verified empirically.
+        let mut rng = StdRng::seed_from_u64(0);
+
+        feed(
+            &mut state,
+            FeedEvent {
+                exit_code: 1,
+                argv0: "cargo",
+                now: fixed_now(),
+            },
+            &cfg,
+            &mut rng,
+        );
+
+        assert_eq!(state.satiety.get(), 73);
+        assert_eq!(state.failure_streak, 1);
+        assert_eq!(state.success_streak, 0);
+        assert_eq!(state.bad_food_meter, 1);
+        assert_eq!(state.health.get(), 100);
+        assert_eq!(state.commands_eaten, 1);
+        assert_ne!(state.activity, Activity::Sick);
+    }
+
+    #[test]
+    fn feed_ignored_exit_code_is_neutral() {
+        let mut state = PetState::newborn("T".into(), Species::Blob, fixed_now());
+        let cfg = default_cfg_for_feed();
+        let mut rng = StdRng::seed_from_u64(0);
+
+        feed(
+            &mut state,
+            FeedEvent {
+                exit_code: 130,
+                argv0: "cargo",
+                now: fixed_now(),
+            },
+            &cfg,
+            &mut rng,
+        );
+
+        assert_eq!(state.satiety.get(), 70);
+        assert_eq!(state.happiness.get(), 70);
+        assert_eq!(state.bad_food_meter, 0);
+        assert_eq!(state.commands_eaten, 1);
+    }
+
+    #[test]
+    fn feed_junk_food_bumps_meter_regardless_of_exit_code() {
+        let mut state = PetState::newborn("T".into(), Species::Blob, fixed_now());
+        let cfg = default_cfg_for_feed();
+        let mut rng = StdRng::seed_from_u64(0);
+
+        feed(
+            &mut state,
+            FeedEvent {
+                exit_code: 0,
+                argv0: "rm",
+                now: fixed_now(),
+            },
+            &cfg,
+            &mut rng,
+        );
+
+        assert_eq!(state.bad_food_meter, 1);
+    }
+
+    #[test]
+    fn feed_while_asleep_is_full_noop() {
+        let mut state = PetState::newborn("T".into(), Species::Blob, fixed_now());
+        state.activity = Activity::Asleep;
+        let cfg = default_cfg_for_feed();
+        let mut rng = StdRng::seed_from_u64(0);
+
+        feed(
+            &mut state,
+            FeedEvent {
+                exit_code: 0,
+                argv0: "cargo",
+                now: fixed_now(),
+            },
+            &cfg,
+            &mut rng,
+        );
+
+        assert_eq!(state.commands_eaten, 0);
+        assert_eq!(state.satiety.get(), 70);
+    }
+
+    #[test]
+    fn feed_dead_pet_is_noop() {
+        let mut state = PetState::newborn("T".into(), Species::Blob, fixed_now());
+        state.alive = false;
+        let cfg = default_cfg_for_feed();
+        let mut rng = StdRng::seed_from_u64(0);
+
+        feed(
+            &mut state,
+            FeedEvent {
+                exit_code: 0,
+                argv0: "cargo",
+                now: fixed_now(),
+            },
+            &cfg,
+            &mut rng,
+        );
+
+        assert_eq!(state.commands_eaten, 0);
+        assert_eq!(state.satiety.get(), 70);
+    }
+
+    #[test]
+    fn sickness_can_trigger_with_high_bad_food_meter() {
+        let cfg = default_cfg_for_feed();
+        let mut triggered = false;
+
+        for seed in 0..50 {
+            let mut state = PetState::newborn("T".into(), Species::Blob, fixed_now());
+            state.bad_food_meter = 20; // p = min(0.05*20, 0.5) = 0.5
+            let mut rng = StdRng::seed_from_u64(seed);
+
+            feed(
+                &mut state,
+                FeedEvent {
+                    exit_code: 1,
+                    argv0: "cargo",
+                    now: fixed_now(),
+                },
+                &cfg,
+                &mut rng,
+            );
+
+            if state.health.get() < 100 && state.activity == Activity::Sick {
+                triggered = true;
+                break;
+            }
+        }
+
+        assert!(
+            triggered,
+            "expected sickness to trigger at least once across 50 seeds with p=0.5"
+        );
     }
 }

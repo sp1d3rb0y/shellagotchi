@@ -23,6 +23,19 @@ pub async fn run() -> anyhow::Result<()> {
         PetState::newborn(cfg.pet_name.clone(), pick_random_species(), now)
     });
 
+    // Write the prompt cache immediately so a `prompt` call right after
+    // the daemon starts doesn't see a stale/missing cache file.
+    let prompt_cache_path = crate::paths::prompt_cache_path();
+    if let Err(err) = std::fs::write(
+        &prompt_cache_path,
+        crate::render::prompt::render_all_formats(&pet),
+    ) {
+        tracing::warn!(
+            "failed to write initial prompt cache to {:?}: {err}",
+            prompt_cache_path
+        );
+    }
+
     let server_state = std::sync::Arc::new(ServerState {
         pet: Mutex::new(pet),
         config: cfg.clone(),

@@ -6,6 +6,7 @@ mod config;
 mod daemon;
 mod paths;
 mod pet;
+mod render;
 
 use clap::{Parser, Subcommand};
 
@@ -32,6 +33,13 @@ enum Commands {
     /// Run the shellagotchi daemon (the process the shell hook and CLI
     /// subcommands talk to over a Unix socket).
     Daemon,
+    /// Print a rendered prompt segment, reading ONLY the prompt cache
+    /// file the daemon maintains (never the IPC socket). This makes it
+    /// safe and fast enough to embed directly in a shell `PS1`.
+    Prompt {
+        #[arg(long, default_value = "compact")]
+        format: String,
+    },
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -49,6 +57,72 @@ async fn main() {
                 std::process::exit(1);
             }
         }
+        Commands::Prompt { format } => {
+            print_prompt(&format);
+        }
+    }
+}
+
+/// How long (in seconds) a prompt cache file may go un-refreshed before
+/// it's considered stale (e.g. the daemon crashed or was never
+/// started). Hardcoded rather than loaded from `Config` on purpose: this
+/// is the performance-critical hot path invoked on every shell prompt
+/// render, and loading/parsing the config file here would add
+/// unnecessary I/O and latency to a path whose entire point is to be as
+/// fast as a single file read. Overridable via
+/// `SHELLAGOTCHI_STALE_THRESHOLD_SECS` for testability (so tests don't
+/// need to sleep 300+ real seconds to exercise the stale path).
+const STALE_THRESHOLD_SECS: u64 = 300;
+
+/// Prints ONE line of the requested prompt `format`, reading only the
+/// plain-text prompt cache file the daemon maintains. This function
+/// deliberately never touches the IPC socket: doing so would reintroduce
+/// exactly the connect/timeout latency this command exists to avoid.
+///
+/// - If the cache file is missing or unreadable (daemon never ran, or a
+///   transient I/O error), prints nothing and returns -- matching the
+///   silent, always-succeed resilience pattern used by `feed`.
+/// - If the cache file's mtime is older than the staleness threshold,
+///   prints `?` instead of the (possibly very stale) cached content.
+/// - Otherwise prints the cache line matching `format` (unrecognized
+///   format strings fall back to `compact`).
+fn print_prompt(format: &str) {
+    let path = crate::paths::prompt_cache_path();
+
+    let contents = match std::fs::read_to_string(&path) {
+        Ok(contents) => contents,
+        Err(_) => return,
+    };
+
+    let stale_threshold_secs = std::env::var("SHELLAGOTCHI_STALE_THRESHOLD_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(STALE_THRESHOLD_SECS);
+
+    let is_stale = std::fs::metadata(&path)
+        .and_then(|meta| meta.modified())
+        .map(
+            |modified| match std::time::SystemTime::now().duration_since(modified) {
+                Ok(age) => age.as_secs() >= stale_threshold_secs,
+                // Clock skew (mtime in the future): treat as fresh.
+                Err(_) => false,
+            },
+        )
+        .unwrap_or(false);
+
+    if is_stale {
+        println!("?");
+        return;
+    }
+
+    let lines: Vec<&str> = contents.split('\n').collect();
+    let index = match format {
+        "minimal" => 1,
+        "verbose" => 2,
+        _ => 0,
+    };
+    if let Some(line) = lines.get(index) {
+        println!("{line}");
     }
 }
 

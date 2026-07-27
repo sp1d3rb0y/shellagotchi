@@ -61,6 +61,15 @@ pub fn socket_path() -> PathBuf {
     runtime_dir().join("sock")
 }
 
+/// Returns the path to the plain-text prompt cache file, inside the
+/// runtime directory. The daemon rewrites this file after every
+/// state-mutating operation; the socket-free `prompt` CLI subcommand
+/// reads ONLY this file (never the socket), which is what keeps it fast
+/// enough to embed in a shell PS1.
+pub fn prompt_cache_path() -> PathBuf {
+    runtime_dir().join("prompt")
+}
+
 /// Ensures the config, state, and runtime directories exist on disk.
 pub fn ensure_dirs_exist() -> std::io::Result<()> {
     if let Some(parent) = config_file_path().parent() {

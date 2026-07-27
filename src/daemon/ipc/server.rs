@@ -62,6 +62,32 @@ fn persist(state: &ServerState, pet: &PetState) {
             state.state_path
         );
     }
+    write_prompt_cache(pet, &crate::paths::prompt_cache_path());
+}
+
+/// Renders `pet` via [`crate::render::prompt::render_all_formats`] and
+/// atomically writes the result to the plain-text prompt cache file at
+/// `cache_path` (write to a `.tmp` sibling, then rename into place, same
+/// pattern as `crate::daemon::persist::save`). Failures are logged but
+/// never propagated: a prompt-cache write failure must never fail the
+/// request that triggered it, since the cache is purely a
+/// performance/UX convenience for the socket-free `prompt` CLI
+/// subcommand, not the source of truth.
+fn write_prompt_cache(pet: &PetState, cache_path: &Path) {
+    let contents = crate::render::prompt::render_all_formats(pet);
+    if let Err(err) = write_prompt_cache_atomic(&contents, cache_path) {
+        tracing::warn!("failed to write prompt cache to {:?}: {err}", cache_path);
+    }
+}
+
+fn write_prompt_cache_atomic(contents: &str, cache_path: &Path) -> std::io::Result<()> {
+    if let Some(parent) = cache_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let tmp_path = cache_path.with_extension("tmp");
+    std::fs::write(&tmp_path, contents)?;
+    std::fs::rename(&tmp_path, cache_path)?;
+    Ok(())
 }
 
 /// Handles ONE already-parsed [`Request`], returning the [`Response`] to
@@ -120,14 +146,17 @@ pub fn handle_request(state: &ServerState, req: &Request) -> Response {
             persist(state, &pet);
             Response::ok_empty()
         }
-        RequestOp::Prompt { format: _ } => {
+        RequestOp::Prompt { format } => {
             let mut pet = state.pet.lock().unwrap();
             let mut rng = rand::rng();
             engine::catch_up(&mut pet, now, &state.config, &mut rng);
             persist(state, &pet);
-            // Minimal placeholder rendering; full prompt rendering is a
-            // later task.
-            Response::ok_prompt(format!("{}% happy", pet.happiness.get()))
+            let rendered = match format.as_str() {
+                "minimal" => crate::render::prompt::render_minimal(&pet),
+                "verbose" => crate::render::prompt::render_verbose(&pet),
+                _ => crate::render::prompt::render_compact(&pet),
+            };
+            Response::ok_prompt(rendered)
         }
         RequestOp::Hatch { species: _ } => {
             // Hatch/death-recovery UX is later plan territory -- not

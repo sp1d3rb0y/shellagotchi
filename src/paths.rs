@@ -55,6 +55,12 @@ pub fn runtime_dir() -> PathBuf {
     PathBuf::from(format!("/tmp/shellagotchi-{user}"))
 }
 
+/// Returns the path to the daemon's Unix domain socket, inside the
+/// runtime directory.
+pub fn socket_path() -> PathBuf {
+    runtime_dir().join("sock")
+}
+
 /// Ensures the config, state, and runtime directories exist on disk.
 pub fn ensure_dirs_exist() -> std::io::Result<()> {
     if let Some(parent) = config_file_path().parent() {

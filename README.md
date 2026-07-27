@@ -220,9 +220,6 @@ test) on every push/PR against `x86_64-unknown-linux-gnu`.
 
 - `shellagotchi hatch` / pet revival after death is not implemented (see
   FAQ above).
-- systemd's `sd-notify`/watchdog integration was considered in the design
-  doc but dropped for simplicity — the shipped unit is a plain
-  `Type=simple` service.
 
 ## Design
 

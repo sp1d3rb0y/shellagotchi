@@ -76,15 +76,32 @@ fn is_within_sleep_window(now: DateTime<Utc>, cfg: &Config) -> bool {
 /// boundary applies one rate uniformly. Acceptable for v1 since ticks are
 /// frequent (~60s) relative to the 8h window.
 #[allow(dead_code)]
-pub fn tick(state: &mut PetState, now: DateTime<Utc>, cfg: &Config) -> Vec<Event> {
+pub fn tick(
+    state: &mut PetState,
+    now: DateTime<Utc>,
+    cfg: &Config,
+    rng: &mut impl rand::Rng,
+) -> Vec<Event> {
     let elapsed = now - state.last_tick;
     if elapsed <= Duration::zero() {
         return Vec::new();
     }
 
+    // Cure check: a Sick pet recovers once hygiene and satiety are both
+    // healthy again (a proxy for "the owner cleaned up and fed the pet").
+    // This must run before the sleep/wake reassignment below, so a freshly
+    // cured pet is correctly re-evaluated as Awake/Asleep by hour rather
+    // than staying pinned to a now-stale Sick value.
+    if state.activity == Activity::Sick && state.hygiene.get() > 80 && state.satiety.get() > 60 {
+        state.activity = Activity::Awake;
+    }
+
     // Determine the target activity based on `now`'s hour, before applying
     // decay, so the decay math below uses the correct (awake/asleep) rates.
-    if state.activity != Activity::Dead {
+    // Dead and (still) Sick pets are never overridden by this hour-based
+    // logic — Sick persists until explicitly cured above, and Dead is
+    // terminal.
+    if state.activity != Activity::Dead && state.activity != Activity::Sick {
         state.activity = if state.energy.get() == 0 || is_within_sleep_window(now, cfg) {
             Activity::Asleep
         } else {
@@ -111,7 +128,6 @@ pub fn tick(state: &mut PetState, now: DateTime<Utc>, cfg: &Config) -> Vec<Event
             state.energy = state.energy + energy_gain;
         }
         Activity::Awake | Activity::Sick => {
-            // TODO(Task 11): sick decay rates
             let satiety_loss = (SATIETY_LOSS_PER_HOUR * hours).round() as u8;
             let energy_loss = (ENERGY_LOSS_PER_HOUR * hours).round() as u8;
             let hygiene_loss = (HYGIENE_LOSS_PER_HOUR * hours).round() as u8;
@@ -130,6 +146,24 @@ pub fn tick(state: &mut PetState, now: DateTime<Utc>, cfg: &Config) -> Vec<Event
     if !state.poops.is_empty() {
         let poop_penalty = (state.poops.len() as f64 * hours).round() as u8;
         state.happiness = state.happiness - poop_penalty;
+    }
+
+    // Poop-driven sickness: an independent risk source from the bad-food
+    // sickness roll in `feed`. Once at least 3 uncleaned poops have piled
+    // up, each tick rolls a probability proportional to both the pile size
+    // and elapsed hours, capped so it never becomes a certainty.
+    if state.poops.len() >= 3 {
+        let p = (0.05 * state.poops.len() as f64 * hours).min(0.9);
+        if rng.random_bool(p) {
+            state.health = state.health - 5;
+            state.activity = Activity::Sick;
+        }
+    }
+
+    // Ongoing health drain while Sick, compounding with any acute hit from
+    // the poop-driven roll above in the same tick.
+    if state.activity == Activity::Sick {
+        state.health = state.health - (5.0 * hours).round() as u8;
     }
 
     // Boredom only accrues while the pet is awake and notices idle time.
@@ -156,6 +190,13 @@ pub fn tick(state: &mut PetState, now: DateTime<Utc>, cfg: &Config) -> Vec<Event
     }
 
     state.last_tick = now;
+
+    // Death: either the poop-driven acute hit or the ongoing sick drain
+    // above (or both, compounded) may have brought health to 0.
+    if state.health.get() == 0 {
+        state.alive = false;
+        state.activity = Activity::Dead;
+    }
 
     Vec::new()
 }
@@ -255,6 +296,13 @@ pub fn feed(
         state.bad_food_meter += 1;
     }
 
+    // Death: the bad-food acute health hit above may have brought health
+    // to 0.
+    if state.health.get() == 0 {
+        state.alive = false;
+        state.activity = Activity::Dead;
+    }
+
     Vec::new()
 }
 
@@ -305,8 +353,9 @@ mod tests {
         let start = fixed_now();
         let mut state = PetState::newborn("T".into(), Species::Blob, start);
         let cfg = Config::default();
+        let mut rng = StdRng::seed_from_u64(0);
 
-        tick(&mut state, start + Duration::hours(1), &cfg);
+        tick(&mut state, start + Duration::hours(1), &cfg, &mut rng);
 
         assert_eq!(state.satiety.get(), 70 - 3);
         assert_eq!(state.energy.get(), 70 - 2);
@@ -319,8 +368,9 @@ mod tests {
         let start = fixed_now();
         let mut state = PetState::newborn("T".into(), Species::Blob, start);
         let cfg = Config::default();
+        let mut rng = StdRng::seed_from_u64(0);
 
-        tick(&mut state, start + Duration::seconds(1), &cfg);
+        tick(&mut state, start + Duration::seconds(1), &cfg, &mut rng);
 
         // (3.0 * (1.0/3600.0)).round() == 0.0, same for energy/hygiene.
         assert_eq!(state.satiety.get(), 70);
@@ -335,14 +385,15 @@ mod tests {
         let start = fixed_now();
         let mut state = PetState::newborn("T".into(), Species::Blob, start);
         let cfg = Config::default();
+        let mut rng = StdRng::seed_from_u64(0);
         let now = start + Duration::hours(2);
 
-        tick(&mut state, now, &cfg);
+        tick(&mut state, now, &cfg, &mut rng);
         let satiety_after_first = state.satiety.get();
         let energy_after_first = state.energy.get();
         let hygiene_after_first = state.hygiene.get();
 
-        tick(&mut state, now, &cfg);
+        tick(&mut state, now, &cfg, &mut rng);
 
         assert_eq!(state.satiety.get(), satiety_after_first);
         assert_eq!(state.energy.get(), energy_after_first);
@@ -354,11 +405,13 @@ mod tests {
         let start = Utc.with_ymd_and_hms(2026, 1, 1, 20, 0, 0).unwrap();
         let mut state = PetState::newborn("T".into(), Species::Blob, start);
         let cfg = Config::default();
+        let mut rng = StdRng::seed_from_u64(0);
 
         tick(
             &mut state,
             Utc.with_ymd_and_hms(2026, 1, 1, 23, 30, 0).unwrap(),
             &cfg,
+            &mut rng,
         );
 
         assert_eq!(state.activity, Activity::Asleep);
@@ -371,8 +424,9 @@ mod tests {
         state.energy = Stat::new(50);
         state.last_tick = start;
         let cfg = Config::default();
+        let mut rng = StdRng::seed_from_u64(0);
 
-        tick(&mut state, start + Duration::hours(1), &cfg);
+        tick(&mut state, start + Duration::hours(1), &cfg, &mut rng);
 
         assert_eq!(state.energy.get(), 58);
         assert_eq!(state.activity, Activity::Asleep);
@@ -385,8 +439,9 @@ mod tests {
         state.satiety = Stat::new(70);
         state.last_tick = start;
         let cfg = Config::default();
+        let mut rng = StdRng::seed_from_u64(0);
 
-        tick(&mut state, start + Duration::hours(1), &cfg);
+        tick(&mut state, start + Duration::hours(1), &cfg, &mut rng);
 
         assert!(
             state.satiety.get() >= 68,
@@ -402,11 +457,13 @@ mod tests {
         let mut state = PetState::newborn("T".into(), Species::Blob, start);
         state.activity = Activity::Asleep;
         let cfg = Config::default();
+        let mut rng = StdRng::seed_from_u64(0);
 
         tick(
             &mut state,
             Utc.with_ymd_and_hms(2026, 1, 1, 7, 30, 0).unwrap(),
             &cfg,
+            &mut rng,
         );
 
         assert_eq!(state.activity, Activity::Awake);
@@ -415,6 +472,7 @@ mod tests {
     #[test]
     fn sleep_window_crosses_midnight_correctly() {
         let cfg = Config::default();
+        let mut rng = StdRng::seed_from_u64(0);
 
         // Hour 23: inside the window (23 -> 7).
         let start = Utc.with_ymd_and_hms(2026, 1, 1, 22, 30, 0).unwrap();
@@ -423,6 +481,7 @@ mod tests {
             &mut state,
             Utc.with_ymd_and_hms(2026, 1, 1, 23, 0, 0).unwrap(),
             &cfg,
+            &mut rng,
         );
         assert_eq!(state.activity, Activity::Asleep, "hour 23 should be asleep");
 
@@ -433,6 +492,7 @@ mod tests {
             &mut state,
             Utc.with_ymd_and_hms(2026, 1, 2, 3, 0, 0).unwrap(),
             &cfg,
+            &mut rng,
         );
         assert_eq!(state.activity, Activity::Asleep, "hour 3 should be asleep");
 
@@ -443,6 +503,7 @@ mod tests {
             &mut state,
             Utc.with_ymd_and_hms(2026, 1, 2, 12, 0, 0).unwrap(),
             &cfg,
+            &mut rng,
         );
         assert_eq!(state.activity, Activity::Awake, "hour 12 should be awake");
     }
@@ -453,8 +514,9 @@ mod tests {
         let mut state = PetState::newborn("T".into(), Species::Blob, start);
         state.energy = Stat::new(0);
         let cfg = Config::default();
+        let mut rng = StdRng::seed_from_u64(0);
 
-        tick(&mut state, start + Duration::minutes(5), &cfg);
+        tick(&mut state, start + Duration::minutes(5), &cfg, &mut rng);
 
         assert_eq!(state.activity, Activity::Asleep);
     }
@@ -665,8 +727,14 @@ mod tests {
         let mut state = PetState::newborn("T".into(), Species::Blob, start);
         state.last_command_at = start;
         let cfg = Config::default();
+        let mut rng = StdRng::seed_from_u64(0);
 
-        tick(&mut state, start + Duration::minutes(45 + 15), &cfg);
+        tick(
+            &mut state,
+            start + Duration::minutes(45 + 15),
+            &cfg,
+            &mut rng,
+        );
 
         assert_eq!(state.boredom.get(), 5);
     }
@@ -677,8 +745,9 @@ mod tests {
         let mut state = PetState::newborn("T".into(), Species::Blob, start);
         state.last_command_at = start;
         let cfg = Config::default();
+        let mut rng = StdRng::seed_from_u64(0);
 
-        tick(&mut state, start + Duration::minutes(30), &cfg);
+        tick(&mut state, start + Duration::minutes(30), &cfg, &mut rng);
 
         assert_eq!(state.boredom.get(), 0);
     }
@@ -716,8 +785,9 @@ mod tests {
         state.boredom = Stat::new(80);
         state.last_command_at = start - Duration::hours(24);
         let cfg = Config::default();
+        let mut rng = StdRng::seed_from_u64(0);
 
-        tick(&mut state, start + Duration::minutes(15), &cfg);
+        tick(&mut state, start + Duration::minutes(15), &cfg, &mut rng);
 
         assert!(
             state.happiness.get() < 70,
@@ -733,8 +803,9 @@ mod tests {
         state.activity = Activity::Asleep;
         state.last_command_at = start - Duration::hours(5);
         let cfg = Config::default();
+        let mut rng = StdRng::seed_from_u64(0);
 
-        tick(&mut state, start + Duration::minutes(30), &cfg);
+        tick(&mut state, start + Duration::minutes(30), &cfg, &mut rng);
 
         assert_eq!(state.boredom.get(), 0);
         assert_eq!(state.activity, Activity::Asleep);
@@ -786,8 +857,9 @@ mod tests {
         let start = fixed_now();
         let mut state = PetState::newborn("T".into(), Species::Blob, start);
         let cfg = Config::default();
+        let mut rng = StdRng::seed_from_u64(0);
 
-        tick(&mut state, start + Duration::hours(24), &cfg);
+        tick(&mut state, start + Duration::hours(24), &cfg, &mut rng);
 
         assert!(state.poops.is_empty());
     }
@@ -797,14 +869,15 @@ mod tests {
         let start = fixed_now();
         let mut state = PetState::newborn("T".into(), Species::Blob, start);
         let cfg = default_cfg_for_feed();
+        let mut rng = StdRng::seed_from_u64(0);
 
         feed_n_successes(&mut state, &cfg, 40);
         assert_eq!(state.poops.len(), 1);
 
-        tick(&mut state, start + Duration::hours(1), &cfg);
+        tick(&mut state, start + Duration::hours(1), &cfg, &mut rng);
         assert_eq!(state.poops.len(), 1);
 
-        tick(&mut state, start + Duration::hours(2), &cfg);
+        tick(&mut state, start + Duration::hours(2), &cfg, &mut rng);
         assert_eq!(state.poops.len(), 1);
     }
 
@@ -825,5 +898,138 @@ mod tests {
         assert!(state.poops.is_empty());
         assert_eq!(state.hygiene.get(), 100);
         assert_eq!(state.happiness.get(), happiness_before + 5);
+    }
+
+    // --- Task 11: sickness (poop-driven), ongoing sick drain, cure, death ---
+
+    #[test]
+    fn poop_sickness_can_trigger_with_many_poops() {
+        let cfg = Config::default();
+        let mut triggered = false;
+
+        for seed in 0..50 {
+            let start = fixed_now();
+            let mut state = PetState::newborn("T".into(), Species::Blob, start);
+            state.poops = vec![start, start, start, start, start];
+            let mut rng = StdRng::seed_from_u64(seed);
+
+            tick(&mut state, start + Duration::hours(1), &cfg, &mut rng);
+
+            if state.activity == Activity::Sick && state.health.get() < 100 {
+                triggered = true;
+                break;
+            }
+        }
+
+        assert!(
+            triggered,
+            "expected poop-driven sickness to trigger at least once across 50 seeds"
+        );
+    }
+
+    #[test]
+    fn sick_pet_loses_health_over_time() {
+        let start = fixed_now();
+        let mut state = PetState::newborn("T".into(), Species::Blob, start);
+        state.activity = Activity::Sick;
+        state.health = Stat::new(50);
+        state.hygiene = Stat::new(50);
+        let cfg = Config::default();
+        let mut rng = StdRng::seed_from_u64(0);
+
+        tick(&mut state, start + Duration::hours(2), &cfg, &mut rng);
+
+        assert!(
+            state.health.get() < 50,
+            "expected sick health drain, got {}",
+            state.health.get()
+        );
+    }
+
+    #[test]
+    fn sick_activity_is_not_overridden_by_sleep_wake_logic() {
+        let start = Utc.with_ymd_and_hms(2026, 1, 1, 23, 0, 0).unwrap();
+        let mut state = PetState::newborn("T".into(), Species::Blob, start);
+        state.activity = Activity::Sick;
+        state.hygiene = Stat::new(50);
+        let cfg = Config::default();
+        let mut rng = StdRng::seed_from_u64(0);
+
+        tick(
+            &mut state,
+            Utc.with_ymd_and_hms(2026, 1, 2, 8, 0, 0).unwrap(),
+            &cfg,
+            &mut rng,
+        );
+
+        assert_eq!(state.activity, Activity::Sick);
+    }
+
+    #[test]
+    fn sick_pet_cured_when_hygiene_and_satiety_recover() {
+        let start = fixed_now();
+        let mut state = PetState::newborn("T".into(), Species::Blob, start);
+        state.activity = Activity::Sick;
+        state.hygiene = Stat::new(90);
+        state.satiety = Stat::new(70);
+        let cfg = Config::default();
+        let mut rng = StdRng::seed_from_u64(0);
+
+        tick(&mut state, start + Duration::minutes(5), &cfg, &mut rng);
+
+        assert_eq!(state.activity, Activity::Awake);
+    }
+
+    #[test]
+    fn death_when_health_reaches_zero_via_tick() {
+        let start = fixed_now();
+        let mut state = PetState::newborn("T".into(), Species::Blob, start);
+        state.activity = Activity::Sick;
+        state.health = Stat::new(3);
+        state.hygiene = Stat::new(50);
+        let cfg = Config::default();
+        let mut rng = StdRng::seed_from_u64(0);
+
+        tick(&mut state, start + Duration::hours(3), &cfg, &mut rng);
+
+        assert_eq!(state.health.get(), 0);
+        assert!(!state.alive);
+        assert_eq!(state.activity, Activity::Dead);
+    }
+
+    #[test]
+    fn death_when_health_reaches_zero_via_feed() {
+        let cfg = default_cfg_for_feed();
+        let mut triggered = false;
+
+        for seed in 0..50 {
+            let mut state = PetState::newborn("T".into(), Species::Blob, fixed_now());
+            state.health = Stat::new(5);
+            state.bad_food_meter = 20; // p = min(0.05*20, 0.5) = 0.5
+            let mut rng = StdRng::seed_from_u64(seed);
+
+            feed(
+                &mut state,
+                FeedEvent {
+                    exit_code: 1,
+                    argv0: "cargo",
+                    now: fixed_now(),
+                },
+                &cfg,
+                &mut rng,
+            );
+
+            if !state.alive {
+                assert_eq!(state.activity, Activity::Dead);
+                assert_eq!(state.health.get(), 0);
+                triggered = true;
+                break;
+            }
+        }
+
+        assert!(
+            triggered,
+            "expected death via feed() to trigger at least once across 50 seeds"
+        );
     }
 }

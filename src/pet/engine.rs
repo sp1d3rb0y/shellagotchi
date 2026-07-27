@@ -363,6 +363,15 @@ pub fn feed(
         state.bad_food_meter += 1;
     }
 
+    if cfg.clean_commands.iter().any(|c| c == event.argv0) {
+        // Running `clean` (or a configured alias) from the shell always
+        // tidies up the pet's habitat, regardless of the command's own
+        // exit code -- even `clean: command not found` (exit 127) still
+        // clears the mess. The happiness bonus, however, is only awarded
+        // when the command genuinely succeeded.
+        apply_clean(state, event.exit_code == 0);
+    }
+
     // Death: the bad-food acute health hit above may have brought health
     // to 0.
     if state.health.get() == 0 {
@@ -388,13 +397,28 @@ fn maybe_poop(state: &mut PetState, cfg: &Config, now: DateTime<Utc>) {
     }
 }
 
-/// Cleans up all uncleaned poops: empties `state.poops`, maxes out hygiene,
-/// and gives a small happiness bonus for a tidy habitat.
-#[allow(dead_code)]
-pub fn clean(state: &mut PetState) -> Vec<Event> {
+/// Empties `state.poops` and maxes out hygiene, always; optionally applies
+/// the small "tidy habitat" happiness bonus on top.
+///
+/// Shared by the explicit standalone [`clean`] (which always awards the
+/// bonus) and the argv0-triggered auto-clean path inside [`feed`] (which
+/// only awards the bonus when the triggering command actually succeeded).
+fn apply_clean(state: &mut PetState, award_happiness_bonus: bool) {
     state.poops.clear();
     state.hygiene = Stat::new(Stat::MAX as u16);
-    state.happiness = state.happiness + 5;
+    if award_happiness_bonus {
+        state.happiness = state.happiness + 5;
+    }
+}
+
+/// Cleans up all uncleaned poops: empties `state.poops`, maxes out hygiene,
+/// and gives a small happiness bonus for a tidy habitat.
+///
+/// This is the explicit, user-invoked path (`shellagotchi clean` / the IPC
+/// `Clean` op) and always awards the happiness bonus, unconditionally.
+#[allow(dead_code)]
+pub fn clean(state: &mut PetState) -> Vec<Event> {
+    apply_clean(state, true);
 
     Vec::new()
 }
@@ -965,6 +989,72 @@ mod tests {
         assert!(state.poops.is_empty());
         assert_eq!(state.hygiene.get(), 100);
         assert_eq!(state.happiness.get(), happiness_before + 5);
+    }
+
+    #[test]
+    fn feed_with_clean_argv0_cleans_pet_on_success() {
+        let mut state = PetState::newborn("T".into(), Species::Blob, fixed_now());
+        let cfg = default_cfg_for_feed();
+        let mut rng = StdRng::seed_from_u64(0);
+
+        feed_n_successes(&mut state, &cfg, 40);
+        assert_eq!(state.poops.len(), 1);
+        assert!(state.hygiene.get() < 100);
+
+        // Pin happiness away from the ceiling so the expected +6 delta
+        // (success-food +1, clean bonus +5) is actually observable rather
+        // than swallowed by the Stat::MAX clamp.
+        state.happiness = Stat::new(50);
+        let happiness_before = state.happiness.get();
+
+        feed(
+            &mut state,
+            FeedEvent {
+                exit_code: 0,
+                argv0: "clean",
+                now: fixed_now(),
+            },
+            &cfg,
+            &mut rng,
+        );
+
+        assert!(state.poops.is_empty());
+        assert_eq!(state.hygiene.get(), 100);
+        // Success-food gain (+1) plus the clean bonus (+5).
+        assert_eq!(state.happiness.get(), happiness_before + 1 + 5);
+    }
+
+    #[test]
+    fn feed_with_clean_argv0_cleans_but_no_bonus_on_failure() {
+        let mut state = PetState::newborn("T".into(), Species::Blob, fixed_now());
+        let cfg = default_cfg_for_feed();
+        let mut rng = StdRng::seed_from_u64(0);
+
+        feed_n_successes(&mut state, &cfg, 40);
+        assert_eq!(state.poops.len(), 1);
+        assert!(state.hygiene.get() < 100);
+
+        let happiness_before = state.happiness.get();
+
+        feed(
+            &mut state,
+            FeedEvent {
+                exit_code: 127,
+                argv0: "clean",
+                now: fixed_now(),
+            },
+            &cfg,
+            &mut rng,
+        );
+
+        // Clean effect applies unconditionally, even on a failing exit code.
+        assert!(state.poops.is_empty());
+        assert_eq!(state.hygiene.get(), 100);
+        // No clean happiness bonus was awarded -- happiness should be
+        // unchanged from the pre-feed value (a bad-food failure carries no
+        // happiness delta of its own, only satiety/failure_streak/bad_food_meter
+        // effects, which don't touch happiness).
+        assert_eq!(state.happiness.get(), happiness_before);
     }
 
     // --- Task 11: sickness (poop-driven), ongoing sick drain, cure, death ---

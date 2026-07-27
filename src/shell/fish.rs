@@ -23,7 +23,17 @@
 
 /// Returns the fish hook snippet, meant to be sourced via
 /// `shellagotchi init fish | source` in `~/.config/fish/config.fish`.
-pub fn hook_snippet() -> String {
+///
+/// `with_clean_alias` is accepted for signature parity with the
+/// bash/zsh variants but is currently ignored: fish's function-definition
+/// and `command`-builtin semantics differ enough from bash/zsh that a
+/// faithful `clean()` wrapper is out of scope for this task. Fish users
+/// still get the automatic argv0-detection cleanup in `shellagotchi feed`
+/// with zero extra setup -- they just don't get this optional explicit
+/// alias flavor. If `with_clean_alias` is requested for fish, callers
+/// should warn the user rather than silently no-op (see `main.rs`'s
+/// `Init` handler).
+pub fn hook_snippet(_with_clean_alias: bool) -> String {
     r#"# shellagotchi
 function __shellagotchi_postexec --on-event fish_postexec
     set -l ec $status
@@ -49,7 +59,7 @@ mod tests {
 
     #[test]
     fn snippet_wires_postexec_and_prompt() {
-        let snippet = hook_snippet();
+        let snippet = hook_snippet(false);
         assert!(snippet.contains("fish_postexec"));
         assert!(snippet.contains("shellagotchi feed"));
         assert!(snippet.contains("shellagotchi prompt"));

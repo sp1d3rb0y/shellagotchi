@@ -66,6 +66,14 @@ enum Commands {
     Init {
         #[arg(value_enum)]
         shell: Shell,
+        /// Also emit an explicit `clean()` shell function wrapper
+        /// (bash/zsh only) around the real `clean` utility, reporting its
+        /// exit code to the daemon. Purely optional sugar: the automatic
+        /// argv0-detection cleanup in `shellagotchi feed` already cleans
+        /// the pet whenever a command named `clean` runs, with zero extra
+        /// setup. Ignored (with a warning) for `fish`.
+        #[arg(long)]
+        with_clean_alias: bool,
     },
     /// Run diagnostic checks (config, socket, daemon, rc-file hooks) and
     /// print a human-readable report. Exits non-zero if any check
@@ -106,11 +114,21 @@ async fn main() {
                 std::process::exit(1);
             }
         }
-        Commands::Init { shell } => {
+        Commands::Init {
+            shell,
+            with_clean_alias,
+        } => {
+            if with_clean_alias && shell == Shell::Fish {
+                eprintln!(
+                    "warning: --with-clean-alias has no effect for fish; the automatic \
+                     argv0-detection cleanup in `shellagotchi feed` already cleans the pet \
+                     whenever a command named `clean` runs, with zero extra setup."
+                );
+            }
             // Deliberately just `println!` the raw snippet: the caller
             // does `eval "$(shellagotchi init bash)"`, so stdout must be
             // exactly the shell snippet, nothing else.
-            println!("{}", crate::shell::hook_snippet(shell));
+            println!("{}", crate::shell::hook_snippet(shell, with_clean_alias));
         }
         Commands::Doctor => {
             let all_ok = doctor().await;

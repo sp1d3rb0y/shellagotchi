@@ -17,6 +17,10 @@ pub struct Config {
     pub poop_interval_commands: u32,
     pub unicode: bool,
     pub junk_food_commands: Vec<String>,
+    /// Commands whose argv0, when detected via the shell hook, trigger an
+    /// automatic pet cleanup (poops cleared, hygiene maxed) in [`crate::pet::engine::feed`],
+    /// with no extra user setup required beyond the normal shell hook.
+    pub clean_commands: Vec<String>,
     pub ignored_exit_codes: Vec<i32>,
     pub bad_food_meter_decay_per_hour: u32,
     /// Caps how many hours of elapsed real time [`crate::pet::engine::catch_up`]
@@ -46,6 +50,7 @@ impl Default for Config {
                 "pkill".to_string(),
                 "dd".to_string(),
             ],
+            clean_commands: vec!["clean".to_string(), "shellagotchi-clean".to_string()],
             ignored_exit_codes: vec![130],
             bad_food_meter_decay_per_hour: 1,
             max_offline_hours: Some(12.0),

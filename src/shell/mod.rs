@@ -34,12 +34,15 @@ impl std::str::FromStr for Shell {
     }
 }
 
-/// Returns the hook snippet for `shell`.
-pub fn hook_snippet(shell: Shell) -> String {
+/// Returns the hook snippet for `shell`. When `with_clean_alias` is
+/// `true`, bash/zsh get an additional explicit `clean()` wrapper function
+/// appended (see `bash::clean_alias_snippet`/`zsh::clean_alias_snippet`);
+/// fish ignores the flag (see `fish::hook_snippet`'s doc comment).
+pub fn hook_snippet(shell: Shell, with_clean_alias: bool) -> String {
     match shell {
-        Shell::Bash => bash::hook_snippet(),
-        Shell::Zsh => zsh::hook_snippet(),
-        Shell::Fish => fish::hook_snippet(),
+        Shell::Bash => bash::hook_snippet(with_clean_alias),
+        Shell::Zsh => zsh::hook_snippet(with_clean_alias),
+        Shell::Fish => fish::hook_snippet(with_clean_alias),
     }
 }
 
@@ -49,7 +52,7 @@ mod tests {
 
     #[test]
     fn bash_snippet_contains_prompt_command_wiring() {
-        let snippet = bash::hook_snippet();
+        let snippet = bash::hook_snippet(false);
         assert!(snippet.contains("PROMPT_COMMAND"));
         assert!(snippet.contains("shellagotchi feed"));
         assert!(snippet.contains("shellagotchi prompt"));
@@ -57,7 +60,7 @@ mod tests {
 
     #[test]
     fn zsh_snippet_contains_precmd_wiring() {
-        let snippet = zsh::hook_snippet();
+        let snippet = zsh::hook_snippet(false);
         assert!(snippet.contains("add-zsh-hook"));
         assert!(snippet.contains("shellagotchi feed"));
         assert!(snippet.contains("shellagotchi prompt"));

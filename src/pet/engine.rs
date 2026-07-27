@@ -122,6 +122,16 @@ pub fn tick(state: &mut PetState, now: DateTime<Utc>, cfg: &Config) -> Vec<Event
         }
     }
 
+    // Uncleaned poops drain happiness continuously, independent of
+    // awake/asleep — pets don't care about mess while sleeping, they just
+    // still smell it. Hygiene itself was already dropped at poop-creation
+    // time in `feed`; this is an ongoing happiness penalty for letting
+    // poops sit uncleaned.
+    if !state.poops.is_empty() {
+        let poop_penalty = (state.poops.len() as f64 * hours).round() as u8;
+        state.happiness = state.happiness - poop_penalty;
+    }
+
     // Boredom only accrues while the pet is awake and notices idle time.
     if state.activity == Activity::Awake {
         let last_activity = state
@@ -201,16 +211,19 @@ pub fn feed(
         return Vec::new();
     }
 
+    // Every command counts towards the poop interval, whether or not it
+    // carries any nutrition (per design: `commands_eaten` itself is the
+    // pooping trigger signal, purely command-count driven — no time
+    // component at all).
+    state.commands_eaten += 1;
+    state.last_command_at = event.now;
+    maybe_poop(state, cfg, event.now);
+
     if cfg.ignored_exit_codes.contains(&event.exit_code) {
         // Neutral command (e.g. Ctrl-C / SIGINT): still "a command", but no
         // nutrition, streak, or bad-food effects.
-        state.commands_eaten += 1;
-        state.last_command_at = event.now;
         return Vec::new();
     }
-
-    state.commands_eaten += 1;
-    state.last_command_at = event.now;
 
     if event.exit_code == 0 {
         // Good food: small satiety/happiness gains, builds a success streak.
@@ -241,6 +254,32 @@ pub fn feed(
         // Junk food is always a bit risky, regardless of exit code.
         state.bad_food_meter += 1;
     }
+
+    Vec::new()
+}
+
+/// Checks whether `state.commands_eaten` has just crossed a multiple of
+/// `cfg.poop_interval_commands` and, if so, records a new poop and drops
+/// hygiene by a flat amount. Commands-eaten driven only — no time
+/// component whatsoever, per design.
+fn maybe_poop(state: &mut PetState, cfg: &Config, now: DateTime<Utc>) {
+    if state.commands_eaten > 0
+        && state
+            .commands_eaten
+            .is_multiple_of(cfg.poop_interval_commands as u64)
+    {
+        state.poops.push(now);
+        state.hygiene = state.hygiene - 15;
+    }
+}
+
+/// Cleans up all uncleaned poops: empties `state.poops`, maxes out hygiene,
+/// and gives a small happiness bonus for a tidy habitat.
+#[allow(dead_code)]
+pub fn clean(state: &mut PetState) -> Vec<Event> {
+    state.poops.clear();
+    state.hygiene = Stat::new(Stat::MAX as u16);
+    state.happiness = state.happiness + 5;
 
     Vec::new()
 }
@@ -699,5 +738,92 @@ mod tests {
 
         assert_eq!(state.boredom.get(), 0);
         assert_eq!(state.activity, Activity::Asleep);
+    }
+
+    fn feed_n_successes(state: &mut PetState, cfg: &Config, n: u32) {
+        let mut rng = StdRng::seed_from_u64(0);
+        for _ in 0..n {
+            feed(
+                state,
+                FeedEvent {
+                    exit_code: 0,
+                    argv0: "cargo",
+                    now: fixed_now(),
+                },
+                cfg,
+                &mut rng,
+            );
+        }
+    }
+
+    #[test]
+    fn poop_appears_after_interval_commands() {
+        let mut state = PetState::newborn("T".into(), Species::Blob, fixed_now());
+        let cfg = default_cfg_for_feed();
+
+        feed_n_successes(&mut state, &cfg, 40);
+        assert_eq!(state.poops.len(), 1);
+
+        feed_n_successes(&mut state, &cfg, 39);
+        assert_eq!(state.poops.len(), 1, "should still be 1 at 79 commands");
+
+        feed_n_successes(&mut state, &cfg, 1);
+        assert_eq!(state.poops.len(), 2, "should become 2 exactly at 80");
+    }
+
+    #[test]
+    fn each_poop_drops_hygiene_by_fifteen() {
+        let mut state = PetState::newborn("T".into(), Species::Blob, fixed_now());
+        let cfg = default_cfg_for_feed();
+
+        feed_n_successes(&mut state, &cfg, 40);
+
+        assert_eq!(state.hygiene.get(), 100 - 15);
+    }
+
+    #[test]
+    fn poop_does_not_appear_from_time_alone() {
+        let start = fixed_now();
+        let mut state = PetState::newborn("T".into(), Species::Blob, start);
+        let cfg = Config::default();
+
+        tick(&mut state, start + Duration::hours(24), &cfg);
+
+        assert!(state.poops.is_empty());
+    }
+
+    #[test]
+    fn uncleaned_poops_persist_across_ticks() {
+        let start = fixed_now();
+        let mut state = PetState::newborn("T".into(), Species::Blob, start);
+        let cfg = default_cfg_for_feed();
+
+        feed_n_successes(&mut state, &cfg, 40);
+        assert_eq!(state.poops.len(), 1);
+
+        tick(&mut state, start + Duration::hours(1), &cfg);
+        assert_eq!(state.poops.len(), 1);
+
+        tick(&mut state, start + Duration::hours(2), &cfg);
+        assert_eq!(state.poops.len(), 1);
+    }
+
+    #[test]
+    fn clean_empties_poops_and_maxes_hygiene() {
+        let mut state = PetState::newborn("T".into(), Species::Blob, fixed_now());
+        let cfg = default_cfg_for_feed();
+
+        feed_n_successes(&mut state, &cfg, 80);
+        assert_eq!(state.poops.len(), 2);
+        assert!(state.hygiene.get() < 100);
+
+        state.happiness = Stat::new(50);
+        let happiness_before = state.happiness.get();
+
+        clean(&mut state);
+
+        assert!(state.poops.is_empty());
+        assert_eq!(state.hygiene.get(), 100);
+        assert_eq!(state.happiness.get(), happiness_before + 5);
     }
 }

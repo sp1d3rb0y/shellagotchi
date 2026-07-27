@@ -220,11 +220,3 @@ test) on every push/PR against `x86_64-unknown-linux-gnu`.
 
 - Species/skin sets for `hatch` are purely cosmetic — no stat/behavior
   differences between blob/cat/dragon/ghost yet.
-
-## Design
-
-See `.hermes/plans/2026-07-27_200126-shellagotchi.md` for the original
-Hermes-authored design/task-breakdown doc. It's kept for historical
-context; where it disagrees with the code in this repo (a few things were
-simplified during implementation, as noted above), the code is
-authoritative.

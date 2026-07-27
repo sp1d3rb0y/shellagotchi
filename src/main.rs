@@ -7,12 +7,14 @@ mod daemon;
 mod paths;
 mod pet;
 mod render;
+mod shell;
 
 use clap::{Parser, Subcommand};
 
 use crate::clock::{Clock, SystemClock};
 use crate::daemon::ipc::client::send_request;
 use crate::daemon::ipc::protocol::{Request, RequestOp};
+use crate::shell::Shell;
 
 #[derive(Parser)]
 #[command(name = "shellagotchi")]
@@ -56,6 +58,19 @@ enum Commands {
     /// pet's sprite, mood, and stat gauges, polling the daemon in the
     /// background. Keybinds: q=quit, c=clean, p=pet, r=refresh.
     Watch,
+    /// Print the shell integration snippet for `shell` to stdout, meant
+    /// to be evaluated/sourced directly into an rc file, e.g.
+    /// `eval "$(shellagotchi init bash)"` in `~/.bashrc`. Prints
+    /// *exactly* the snippet with no extra logging, since the caller
+    /// feeds stdout straight into `eval`/`source`.
+    Init {
+        #[arg(value_enum)]
+        shell: Shell,
+    },
+    /// Run diagnostic checks (config, socket, daemon, rc-file hooks) and
+    /// print a human-readable report. Exits non-zero if any check
+    /// fails.
+    Doctor,
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -88,7 +103,138 @@ async fn main() {
                 std::process::exit(1);
             }
         }
+        Commands::Init { shell } => {
+            // Deliberately just `println!` the raw snippet: the caller
+            // does `eval "$(shellagotchi init bash)"`, so stdout must be
+            // exactly the shell snippet, nothing else.
+            println!("{}", crate::shell::hook_snippet(shell));
+        }
+        Commands::Doctor => {
+            let all_ok = doctor().await;
+            if !all_ok {
+                std::process::exit(1);
+            }
+        }
     }
+}
+
+/// Runs all diagnostic checks and prints a human-readable report to
+/// stdout. Returns `true` if every check passed (or was informational
+/// and skipped), `false` if any check failed.
+async fn doctor() -> bool {
+    let mut all_ok = true;
+    let mut check = |label: &str, ok: bool, detail: Option<String>| {
+        let marker = if ok { "[OK]" } else { "[FAIL]" };
+        match detail {
+            Some(detail) => println!("{marker} {label}: {detail}"),
+            None => println!("{marker} {label}"),
+        }
+        if !ok {
+            all_ok = false;
+        }
+    };
+
+    println!("shellagotchi doctor");
+    println!("--------------------");
+
+    // 1. Binary location (informational; always knowable).
+    match std::env::current_exe() {
+        Ok(path) => check(
+            "binary",
+            true,
+            Some(format!("running from {}", path.display())),
+        ),
+        Err(err) => check("binary", false, Some(format!("{err}"))),
+    }
+
+    // 2. Config parses.
+    match crate::config::load() {
+        Ok(_) => check(
+            "config",
+            true,
+            Some(format!(
+                "parsed OK from {}",
+                crate::paths::config_file_path().display()
+            )),
+        ),
+        Err(err) => check("config", false, Some(format!("{err}"))),
+    }
+
+    // 3. State dir writable.
+    match crate::paths::ensure_dirs_exist() {
+        Ok(()) => {
+            let probe = crate::paths::state_dir().join(".doctor-probe");
+            match std::fs::write(&probe, b"probe") {
+                Ok(()) => {
+                    let _ = std::fs::remove_file(&probe);
+                    check("state dir writable", true, None);
+                }
+                Err(err) => check("state dir writable", false, Some(format!("{err}"))),
+            }
+        }
+        Err(err) => check("state dir writable", false, Some(format!("{err}"))),
+    }
+
+    // 4. Socket exists.
+    let socket_path = crate::paths::socket_path();
+    check(
+        "socket exists",
+        socket_path.exists(),
+        Some(format!("{}", socket_path.display())),
+    );
+
+    // 5. Daemon responds to ping.
+    let req = Request::new(RequestOp::Ping);
+    match send_request(&socket_path, &req).await {
+        Ok(response) if response.ok => check("daemon ping", true, None),
+        Ok(response) => check(
+            "daemon ping",
+            false,
+            Some(
+                response
+                    .error
+                    .unwrap_or_else(|| "daemon returned ok=false".to_string()),
+            ),
+        ),
+        Err(err) => check("daemon ping", false, Some(format!("{err}"))),
+    }
+
+    // 6. Prompt cache fresh (existence + non-empty, per the simplified
+    // bar this task's spec allows).
+    let cache_path = crate::paths::prompt_cache_path();
+    let cache_ok = std::fs::metadata(&cache_path)
+        .map(|meta| meta.len() > 0)
+        .unwrap_or(false);
+    check(
+        "prompt cache",
+        cache_ok,
+        Some(format!("{}", cache_path.display())),
+    );
+
+    // 7. Hook markers found in rc files.
+    let home = std::env::var("HOME").unwrap_or_default();
+    for (label, rc) in [("bashrc hook", ".bashrc"), ("zshrc hook", ".zshrc")] {
+        let rc_path = std::path::Path::new(&home).join(rc);
+        let found = std::fs::read_to_string(&rc_path)
+            .map(|contents| contents.contains("shellagotchi"))
+            .unwrap_or(false);
+        check(label, found, Some(format!("{}", rc_path.display())));
+    }
+
+    // 8. Systemd unit: not yet implemented, informational only.
+    println!("[SKIP] systemd unit (not yet implemented, see Task 22)");
+
+    println!("--------------------");
+    println!(
+        "{}",
+        if all_ok {
+            "all checks passed"
+        } else {
+            "one or more checks failed"
+        }
+    );
+
+    all_ok
 }
 
 /// Fetches the pet's current state from the daemon over IPC and prints

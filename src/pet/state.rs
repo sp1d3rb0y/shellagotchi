@@ -56,6 +56,8 @@ pub struct PetState {
     pub failure_streak: u32,
     pub activity: Activity,
     pub alive: bool,
+    pub last_command_at: DateTime<Utc>,
+    pub last_pet_interaction: Option<DateTime<Utc>>,
 }
 
 #[allow(dead_code)]
@@ -83,6 +85,8 @@ impl PetState {
             failure_streak: 0,
             activity: Activity::Awake,
             alive: true,
+            last_command_at: now,
+            last_pet_interaction: None,
         }
     }
 }

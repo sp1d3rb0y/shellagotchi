@@ -16,6 +16,7 @@ use rand::RngExt;
 
 use crate::config::Config;
 use crate::pet::state::{Activity, PetState};
+use crate::pet::stats::Stat;
 
 /// An event emitted by a tick, for logging/UI purposes. Empty for now;
 /// later tasks will add variants (fed, pooped, slept, got sick, etc).
@@ -121,7 +122,53 @@ pub fn tick(state: &mut PetState, now: DateTime<Utc>, cfg: &Config) -> Vec<Event
         }
     }
 
+    // Boredom only accrues while the pet is awake and notices idle time.
+    if state.activity == Activity::Awake {
+        let last_activity = state
+            .last_pet_interaction
+            .map_or(state.last_command_at, |t| t.max(state.last_command_at));
+        let idle = now - last_activity;
+        let threshold = Duration::minutes(cfg.boredom_after_minutes as i64);
+
+        if idle > threshold {
+            let idle_past_threshold = idle - threshold;
+            let quarter_hours = idle_past_threshold.num_minutes() as f64 / 15.0;
+            let boredom_gain = (5.0 * quarter_hours).round() as u16;
+            state.boredom = Stat::new(boredom_gain);
+        } else {
+            state.boredom = Stat::new(0);
+        }
+
+        if state.boredom.get() > 70 {
+            let happiness_loss = (2.0 * (elapsed.num_minutes() as f64 / 15.0)).round() as u8;
+            state.happiness = state.happiness - happiness_loss;
+        }
+    }
+
     state.last_tick = now;
+
+    Vec::new()
+}
+
+/// Cooldown window for `pet_interaction`, to prevent spamming boredom resets.
+const PET_INTERACTION_COOLDOWN_MINUTES: i64 = 10;
+
+/// Processes an explicit "pet"/"play" command, resetting boredom to 0.
+///
+/// Subject to a 10-minute cooldown: if called again before the cooldown
+/// elapses (relative to `state.last_pet_interaction`), it's a no-op — the
+/// pet's boredom and `last_pet_interaction` are left unchanged.
+#[allow(dead_code)]
+pub fn pet_interaction(state: &mut PetState, now: DateTime<Utc>) -> Vec<Event> {
+    let on_cooldown = state
+        .last_pet_interaction
+        .is_some_and(|last| now - last < Duration::minutes(PET_INTERACTION_COOLDOWN_MINUTES));
+    if on_cooldown {
+        return Vec::new();
+    }
+
+    state.boredom = Stat::new(0);
+    state.last_pet_interaction = Some(now);
 
     Vec::new()
 }
@@ -158,10 +205,12 @@ pub fn feed(
         // Neutral command (e.g. Ctrl-C / SIGINT): still "a command", but no
         // nutrition, streak, or bad-food effects.
         state.commands_eaten += 1;
+        state.last_command_at = event.now;
         return Vec::new();
     }
 
     state.commands_eaten += 1;
+    state.last_command_at = event.now;
 
     if event.exit_code == 0 {
         // Good food: small satiety/happiness gains, builds a success streak.
@@ -569,5 +618,86 @@ mod tests {
             triggered,
             "expected sickness to trigger at least once across 50 seeds with p=0.5"
         );
+    }
+
+    #[test]
+    fn boredom_rises_after_idle_threshold() {
+        let start = fixed_now();
+        let mut state = PetState::newborn("T".into(), Species::Blob, start);
+        state.last_command_at = start;
+        let cfg = Config::default();
+
+        tick(&mut state, start + Duration::minutes(45 + 15), &cfg);
+
+        assert_eq!(state.boredom.get(), 5);
+    }
+
+    #[test]
+    fn no_boredom_within_threshold() {
+        let start = fixed_now();
+        let mut state = PetState::newborn("T".into(), Species::Blob, start);
+        state.last_command_at = start;
+        let cfg = Config::default();
+
+        tick(&mut state, start + Duration::minutes(30), &cfg);
+
+        assert_eq!(state.boredom.get(), 0);
+    }
+
+    #[test]
+    fn pet_interaction_resets_boredom() {
+        let start = fixed_now();
+        let mut state = PetState::newborn("T".into(), Species::Blob, start);
+        state.boredom = Stat::new(80);
+
+        pet_interaction(&mut state, start);
+
+        assert_eq!(state.boredom.get(), 0);
+        assert_eq!(state.last_pet_interaction, Some(start));
+    }
+
+    #[test]
+    fn pet_interaction_respects_cooldown() {
+        let t0 = fixed_now();
+        let mut state = PetState::newborn("T".into(), Species::Blob, t0);
+
+        pet_interaction(&mut state, t0);
+        state.boredom = Stat::new(80);
+
+        pet_interaction(&mut state, t0 + Duration::minutes(5));
+
+        assert_eq!(state.boredom.get(), 80);
+        assert_eq!(state.last_pet_interaction, Some(t0));
+    }
+
+    #[test]
+    fn high_boredom_drains_happiness_over_time() {
+        let start = fixed_now();
+        let mut state = PetState::newborn("T".into(), Species::Blob, start);
+        state.boredom = Stat::new(80);
+        state.last_command_at = start - Duration::hours(24);
+        let cfg = Config::default();
+
+        tick(&mut state, start + Duration::minutes(15), &cfg);
+
+        assert!(
+            state.happiness.get() < 70,
+            "expected happiness drain, got {}",
+            state.happiness.get()
+        );
+    }
+
+    #[test]
+    fn asleep_pets_dont_accrue_boredom() {
+        let start = Utc.with_ymd_and_hms(2026, 1, 1, 23, 0, 0).unwrap();
+        let mut state = PetState::newborn("T".into(), Species::Blob, start);
+        state.activity = Activity::Asleep;
+        state.last_command_at = start - Duration::hours(5);
+        let cfg = Config::default();
+
+        tick(&mut state, start + Duration::minutes(30), &cfg);
+
+        assert_eq!(state.boredom.get(), 0);
+        assert_eq!(state.activity, Activity::Asleep);
     }
 }

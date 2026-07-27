@@ -1,0 +1,20 @@
+[Unit]
+Description=Shellagotchi terminal pet daemon
+Documentation=man:shellagotchi(1)
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/shellagotchi daemon
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.local/state/shellagotchi %h/.config/shellagotchi
+RestrictAddressFamilies=AF_UNIX
+MemoryMax=64M
+CPUQuota=5%
+
+[Install]
+WantedBy=default.target

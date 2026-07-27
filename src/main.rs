@@ -71,6 +71,9 @@ enum Commands {
     /// print a human-readable report. Exits non-zero if any check
     /// fails.
     Doctor,
+    /// Write the systemd user unit file and, if a systemd user session
+    /// is available, enable + start the daemon via it.
+    Install,
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -112,6 +115,12 @@ async fn main() {
         Commands::Doctor => {
             let all_ok = doctor().await;
             if !all_ok {
+                std::process::exit(1);
+            }
+        }
+        Commands::Install => {
+            if let Err(err) = crate::daemon::install::install() {
+                eprintln!("{err}");
                 std::process::exit(1);
             }
         }

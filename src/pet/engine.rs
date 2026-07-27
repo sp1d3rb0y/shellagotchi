@@ -11,10 +11,10 @@
 //! Later tasks will extend `tick` with sleep transitions, feeding, boredom,
 //! pooping, and sickness logic, and will grow the `Event` enum accordingly.
 
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Duration, Timelike, Utc};
 
 use crate::config::Config;
-use crate::pet::state::PetState;
+use crate::pet::state::{Activity, PetState};
 
 /// An event emitted by a tick, for logging/UI purposes. Empty for now;
 /// later tasks will add variants (fed, pooped, slept, got sick, etc).
@@ -29,6 +29,24 @@ const SATIETY_LOSS_PER_HOUR: f64 = 3.0;
 const ENERGY_LOSS_PER_HOUR: f64 = 2.0;
 #[allow(dead_code)]
 const HYGIENE_LOSS_PER_HOUR: f64 = 1.0;
+#[allow(dead_code)]
+const ENERGY_GAIN_PER_HOUR_ASLEEP: f64 = 8.0;
+
+/// Determines whether `now`'s hour-of-day falls within the configured sleep
+/// window (`cfg.sleep_start_hour` to `cfg.wake_hour`), correctly handling a
+/// window that crosses midnight (e.g. 23 -> 7).
+///
+/// Simplification: treats the stored UTC timestamp's hour-of-day as the
+/// sleep boundary; full local-timezone handling can be layered on later
+/// without changing this contract.
+fn is_within_sleep_window(now: DateTime<Utc>, cfg: &Config) -> bool {
+    let hour = now.hour();
+    if cfg.sleep_start_hour <= cfg.wake_hour {
+        hour >= cfg.sleep_start_hour && hour < cfg.wake_hour
+    } else {
+        hour >= cfg.sleep_start_hour || hour < cfg.wake_hour
+    }
+}
 
 /// Advances `state` to reflect elapsed wall-clock time up to `now`.
 ///
@@ -41,22 +59,58 @@ const HYGIENE_LOSS_PER_HOUR: f64 = 1.0;
 /// Decay is proportional to elapsed time (fractional hours apply fractional
 /// decay, rounded to the nearest whole point) rather than only firing once
 /// per full hour.
+///
+/// Simplification: uses the activity determined by `now`'s hour for the
+/// ENTIRE elapsed duration, not per-minute — a tick spanning a sleep/wake
+/// boundary applies one rate uniformly. Acceptable for v1 since ticks are
+/// frequent (~60s) relative to the 8h window.
 #[allow(dead_code)]
-pub fn tick(state: &mut PetState, now: DateTime<Utc>, _cfg: &Config) -> Vec<Event> {
+pub fn tick(state: &mut PetState, now: DateTime<Utc>, cfg: &Config) -> Vec<Event> {
     let elapsed = now - state.last_tick;
     if elapsed <= Duration::zero() {
         return Vec::new();
     }
 
+    // Determine the target activity based on `now`'s hour, before applying
+    // decay, so the decay math below uses the correct (awake/asleep) rates.
+    if state.activity != Activity::Dead {
+        state.activity = if state.energy.get() == 0 || is_within_sleep_window(now, cfg) {
+            Activity::Asleep
+        } else {
+            Activity::Awake
+        };
+    }
+
     let hours = elapsed.num_seconds() as f64 / 3600.0;
 
-    let satiety_loss = (SATIETY_LOSS_PER_HOUR * hours).round() as u8;
-    let energy_loss = (ENERGY_LOSS_PER_HOUR * hours).round() as u8;
-    let hygiene_loss = (HYGIENE_LOSS_PER_HOUR * hours).round() as u8;
+    match state.activity {
+        Activity::Dead => {
+            // Dead pets don't decay further. Full death handling is a later
+            // task; here we simply skip stat decay.
+            state.last_tick = now;
+            return Vec::new();
+        }
+        Activity::Asleep => {
+            let satiety_loss = ((SATIETY_LOSS_PER_HOUR / 2.0) * hours).round() as u8;
+            let hygiene_loss = (HYGIENE_LOSS_PER_HOUR * hours).round() as u8;
+            let energy_gain = (ENERGY_GAIN_PER_HOUR_ASLEEP * hours).round() as u8;
 
-    state.satiety = state.satiety - satiety_loss;
-    state.energy = state.energy - energy_loss;
-    state.hygiene = state.hygiene - hygiene_loss;
+            state.satiety = state.satiety - satiety_loss;
+            state.hygiene = state.hygiene - hygiene_loss;
+            state.energy = state.energy + energy_gain;
+        }
+        Activity::Awake | Activity::Sick => {
+            // TODO(Task 11): sick decay rates
+            let satiety_loss = (SATIETY_LOSS_PER_HOUR * hours).round() as u8;
+            let energy_loss = (ENERGY_LOSS_PER_HOUR * hours).round() as u8;
+            let hygiene_loss = (HYGIENE_LOSS_PER_HOUR * hours).round() as u8;
+
+            state.satiety = state.satiety - satiety_loss;
+            state.energy = state.energy - energy_loss;
+            state.hygiene = state.hygiene - hygiene_loss;
+        }
+    }
+
     state.last_tick = now;
 
     Vec::new()
@@ -65,7 +119,8 @@ pub fn tick(state: &mut PetState, now: DateTime<Utc>, _cfg: &Config) -> Vec<Even
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pet::state::Species;
+    use crate::pet::state::{Activity, Species};
+    use crate::pet::stats::Stat;
     use chrono::TimeZone;
 
     /// A fixed, deterministic timestamp for tests. Tests must never call
@@ -122,5 +177,115 @@ mod tests {
         assert_eq!(state.satiety.get(), satiety_after_first);
         assert_eq!(state.energy.get(), energy_after_first);
         assert_eq!(state.hygiene.get(), hygiene_after_first);
+    }
+
+    #[test]
+    fn sleeps_at_night() {
+        let start = Utc.with_ymd_and_hms(2026, 1, 1, 20, 0, 0).unwrap();
+        let mut state = PetState::newborn("T".into(), Species::Blob, start);
+        let cfg = Config::default();
+
+        tick(
+            &mut state,
+            Utc.with_ymd_and_hms(2026, 1, 1, 23, 30, 0).unwrap(),
+            &cfg,
+        );
+
+        assert_eq!(state.activity, Activity::Asleep);
+    }
+
+    #[test]
+    fn energy_climbs_while_asleep() {
+        let start = Utc.with_ymd_and_hms(2026, 1, 1, 23, 0, 0).unwrap();
+        let mut state = PetState::newborn("T".into(), Species::Blob, start);
+        state.energy = Stat::new(50);
+        state.last_tick = start;
+        let cfg = Config::default();
+
+        tick(&mut state, start + Duration::hours(1), &cfg);
+
+        assert_eq!(state.energy.get(), 58);
+        assert_eq!(state.activity, Activity::Asleep);
+    }
+
+    #[test]
+    fn satiety_decay_halved_while_asleep() {
+        let start = Utc.with_ymd_and_hms(2026, 1, 1, 23, 0, 0).unwrap();
+        let mut state = PetState::newborn("T".into(), Species::Blob, start);
+        state.satiety = Stat::new(70);
+        state.last_tick = start;
+        let cfg = Config::default();
+
+        tick(&mut state, start + Duration::hours(1), &cfg);
+
+        assert!(
+            state.satiety.get() >= 68,
+            "expected halved decay (>=68), got {}",
+            state.satiety.get()
+        );
+        assert_eq!(state.activity, Activity::Asleep);
+    }
+
+    #[test]
+    fn wakes_at_morning() {
+        let start = Utc.with_ymd_and_hms(2026, 1, 1, 6, 0, 0).unwrap();
+        let mut state = PetState::newborn("T".into(), Species::Blob, start);
+        state.activity = Activity::Asleep;
+        let cfg = Config::default();
+
+        tick(
+            &mut state,
+            Utc.with_ymd_and_hms(2026, 1, 1, 7, 30, 0).unwrap(),
+            &cfg,
+        );
+
+        assert_eq!(state.activity, Activity::Awake);
+    }
+
+    #[test]
+    fn sleep_window_crosses_midnight_correctly() {
+        let cfg = Config::default();
+
+        // Hour 23: inside the window (23 -> 7).
+        let start = Utc.with_ymd_and_hms(2026, 1, 1, 22, 30, 0).unwrap();
+        let mut state = PetState::newborn("T".into(), Species::Blob, start);
+        tick(
+            &mut state,
+            Utc.with_ymd_and_hms(2026, 1, 1, 23, 0, 0).unwrap(),
+            &cfg,
+        );
+        assert_eq!(state.activity, Activity::Asleep, "hour 23 should be asleep");
+
+        // Hour 3: inside the window (crosses midnight).
+        let start = Utc.with_ymd_and_hms(2026, 1, 2, 2, 30, 0).unwrap();
+        let mut state = PetState::newborn("T".into(), Species::Blob, start);
+        tick(
+            &mut state,
+            Utc.with_ymd_and_hms(2026, 1, 2, 3, 0, 0).unwrap(),
+            &cfg,
+        );
+        assert_eq!(state.activity, Activity::Asleep, "hour 3 should be asleep");
+
+        // Hour 12: clearly outside the window.
+        let start = Utc.with_ymd_and_hms(2026, 1, 2, 11, 30, 0).unwrap();
+        let mut state = PetState::newborn("T".into(), Species::Blob, start);
+        tick(
+            &mut state,
+            Utc.with_ymd_and_hms(2026, 1, 2, 12, 0, 0).unwrap(),
+            &cfg,
+        );
+        assert_eq!(state.activity, Activity::Awake, "hour 12 should be awake");
+    }
+
+    #[test]
+    fn forced_nap_when_energy_zero() {
+        let start = Utc.with_ymd_and_hms(2026, 1, 1, 14, 0, 0).unwrap();
+        let mut state = PetState::newborn("T".into(), Species::Blob, start);
+        state.energy = Stat::new(0);
+        let cfg = Config::default();
+
+        tick(&mut state, start + Duration::minutes(5), &cfg);
+
+        assert_eq!(state.activity, Activity::Asleep);
     }
 }

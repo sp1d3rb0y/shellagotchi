@@ -7,6 +7,8 @@ mod clock;
 #[allow(dead_code)]
 mod config;
 #[allow(dead_code)]
+mod daemon;
+#[allow(dead_code)]
 mod paths;
 mod pet;
 

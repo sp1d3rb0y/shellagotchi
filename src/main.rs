@@ -1,14 +1,9 @@
 #![warn(clippy::disallowed_methods)]
 
-// Config and paths are wired in by later tasks (CLI/daemon wiring); allow dead_code
-// here until then so this task's clippy run is clean without stubbing out callers.
 #[allow(dead_code)]
 mod clock;
-#[allow(dead_code)]
 mod config;
-#[allow(dead_code)]
 mod daemon;
-#[allow(dead_code)]
 mod paths;
 mod pet;
 
@@ -34,6 +29,9 @@ enum Commands {
         #[arg(long, default_value_t = 0)]
         duration: u64,
     },
+    /// Run the shellagotchi daemon (the process the shell hook and CLI
+    /// subcommands talk to over a Unix socket).
+    Daemon,
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -43,6 +41,13 @@ async fn main() {
     match cli.command {
         Commands::Feed { exit, duration } => {
             feed(exit, duration).await;
+        }
+        Commands::Daemon => {
+            tracing_subscriber::fmt::init();
+            if let Err(err) = crate::daemon::run::run().await {
+                tracing::error!("daemon exited with error: {err}");
+                std::process::exit(1);
+            }
         }
     }
 }

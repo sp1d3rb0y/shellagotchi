@@ -25,6 +25,9 @@ pub struct Config {
     /// `None` disables the cap entirely ("hardcore mode": the full gap is
     /// simulated, however long it was).
     pub max_offline_hours: Option<f64>,
+    /// How often (in seconds) the daemon's main loop ticks the pet forward
+    /// via `catch_up`, independent of any IPC requests.
+    pub tick_interval_secs: u64,
 }
 
 impl Default for Config {
@@ -46,6 +49,7 @@ impl Default for Config {
             ignored_exit_codes: vec![130],
             bad_food_meter_decay_per_hour: 1,
             max_offline_hours: Some(12.0),
+            tick_interval_secs: 60,
         }
     }
 }

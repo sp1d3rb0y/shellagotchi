@@ -63,10 +63,25 @@ mod tests {
     ) -> (
         tokio::task::JoinHandle<anyhow::Result<()>>,
         tokio::sync::oneshot::Sender<()>,
+        tempfile::TempDir,
     ) {
+        use crate::config::Config;
+        use crate::pet::state::{PetState, Species};
+        use chrono::{TimeZone, Utc};
+        use std::sync::Mutex;
+
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
         let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
-        let state = Arc::new(server::ServerState::default());
+
+        let state_dir = tempfile::tempdir().unwrap();
+        let state_path = state_dir.path().join("pet.json");
+        let now = Utc.with_ymd_and_hms(2026, 1, 1, 12, 0, 0).unwrap();
+        let pet = PetState::newborn("T".into(), Species::Blob, now);
+        let state = Arc::new(server::ServerState {
+            pet: Mutex::new(pet),
+            config: Config::default(),
+            state_path,
+        });
 
         let handle = tokio::spawn(async move {
             server::serve_with_ready_signal(&socket_path, state, shutdown_rx, Some(ready_tx)).await
@@ -74,7 +89,7 @@ mod tests {
 
         let _ = tokio::time::timeout(StdDuration::from_secs(2), ready_rx).await;
 
-        (handle, shutdown_tx)
+        (handle, shutdown_tx, state_dir)
     }
 
     #[tokio::test]
@@ -82,7 +97,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let socket_path = dir.path().join("test.sock");
 
-        let (handle, shutdown_tx) = spawn_test_server(socket_path.clone()).await;
+        let (handle, shutdown_tx, _state_dir) = spawn_test_server(socket_path.clone()).await;
 
         let req = Request::new(RequestOp::Ping);
         let response = send_request(&socket_path, &req)

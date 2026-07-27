@@ -11,19 +11,24 @@
 //!   accepts connections, frames/parses/writes newline-delimited JSON,
 //!   and calls [`handle_request`] for each parsed line.
 //!
-//! Wiring the real pet engine into [`handle_request`] is deferred to a
-//! later task (the daemon main loop); for now it operates against a
-//! minimal in-memory [`ServerState`] just to prove dispatch works
-//! end-to-end.
+//! [`handle_request`] is wired to the real pet engine: it mutates a
+//! shared [`ServerState::pet`] via `crate::pet::engine`'s `catch_up`,
+//! `feed`, `clean`, and `pet_interaction`, persisting the pet to disk
+//! after each mutating request.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use chrono::DateTime;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 
+use crate::clock::{Clock, SystemClock};
+use crate::config::Config;
 use crate::daemon::ipc::protocol::{Request, RequestOp, Response};
+use crate::pet::engine::{self, FeedEvent};
+use crate::pet::state::PetState;
 
 /// Maximum length (in bytes) of a single newline-delimited line the
 /// server will accept. Guards against a misbehaving/malicious client
@@ -36,33 +41,97 @@ const IDLE_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Shared, thread-safe state the server dispatches requests against.
 ///
-/// For now this is a minimal in-memory counter, enough to prove request
-/// dispatch works end-to-end; full `PetState`/engine wiring is deferred to
-/// a later task, which will replace/extend this with real state and calls
-/// into `engine::feed`/`engine::tick`/etc.
-#[derive(Debug, Default)]
+/// Holds the live, in-memory [`PetState`] the daemon owns, the resolved
+/// [`Config`], and the path the pet should be persisted to after each
+/// mutating request.
+#[derive(Debug)]
 pub struct ServerState {
-    pub ping_count: Mutex<u64>,
+    pub pet: Mutex<PetState>,
+    pub config: Config,
+    pub state_path: PathBuf,
+}
+
+/// Saves `pet` to `state.state_path`, logging (but not propagating) any
+/// failure -- the in-memory state is still correct even if the
+/// save-to-disk failed, so a persistence error must never fail the
+/// request itself.
+fn persist(state: &ServerState, pet: &PetState) {
+    if let Err(err) = crate::daemon::persist::save(pet, &state.state_path) {
+        tracing::warn!(
+            "failed to persist pet state to {:?}: {err}",
+            state.state_path
+        );
+    }
 }
 
 /// Handles ONE already-parsed [`Request`], returning the [`Response`] to
-/// send back. This is the seam a later task will replace/extend to call
-/// into the real pet engine (feed/clean/pet/status/hatch).
+/// send back. Mutating ops (`feed`/`clean`/`pet`/`status`) first call
+/// [`engine::catch_up`] to bring the pet up to date with elapsed time,
+/// then apply their own effect, then persist the result to disk.
 pub fn handle_request(state: &ServerState, req: &Request) -> Response {
+    let now = SystemClock.now();
+
     match &req.op {
-        RequestOp::Ping => {
-            *state.ping_count.lock().unwrap() += 1;
+        RequestOp::Ping => Response::ok_empty(),
+        RequestOp::Status => {
+            let mut pet = state.pet.lock().unwrap();
+            let mut rng = rand::rng();
+            engine::catch_up(&mut pet, now, &state.config, &mut rng);
+            persist(state, &pet);
+            Response::ok_state(pet.clone())
+        }
+        RequestOp::Feed {
+            exit_code,
+            duration_ms: _,
+            argv0,
+            ts,
+        } => {
+            let mut pet = state.pet.lock().unwrap();
+            let mut rng = rand::rng();
+            engine::catch_up(&mut pet, now, &state.config, &mut rng);
+
+            let feed_now = DateTime::from_timestamp(*ts, 0).unwrap_or(now);
+            engine::feed(
+                &mut pet,
+                FeedEvent {
+                    exit_code: *exit_code,
+                    argv0,
+                    now: feed_now,
+                },
+                &state.config,
+                &mut rng,
+            );
+            persist(state, &pet);
             Response::ok_empty()
         }
-        RequestOp::Status
-        | RequestOp::Feed { .. }
-        | RequestOp::Prompt { .. }
-        | RequestOp::Clean
-        | RequestOp::Pet
-        | RequestOp::Hatch { .. } => {
-            // Not yet wired to real pet state in this task -- return a
-            // clear "not implemented" error rather than silently no-op'ing,
-            // so callers know this path isn't live yet.
+        RequestOp::Clean => {
+            let mut pet = state.pet.lock().unwrap();
+            let mut rng = rand::rng();
+            engine::catch_up(&mut pet, now, &state.config, &mut rng);
+            engine::clean(&mut pet);
+            persist(state, &pet);
+            Response::ok_empty()
+        }
+        RequestOp::Pet => {
+            let mut pet = state.pet.lock().unwrap();
+            let mut rng = rand::rng();
+            engine::catch_up(&mut pet, now, &state.config, &mut rng);
+            engine::pet_interaction(&mut pet, now);
+            persist(state, &pet);
+            Response::ok_empty()
+        }
+        RequestOp::Prompt { format: _ } => {
+            let mut pet = state.pet.lock().unwrap();
+            let mut rng = rand::rng();
+            engine::catch_up(&mut pet, now, &state.config, &mut rng);
+            persist(state, &pet);
+            // Minimal placeholder rendering; full prompt rendering is a
+            // later task.
+            Response::ok_prompt(format!("{}% happy", pet.happiness.get()))
+        }
+        RequestOp::Hatch { species: _ } => {
+            // Hatch/death-recovery UX is later plan territory -- not
+            // implemented yet.
             Response::err("not implemented yet")
         }
         RequestOp::Unknown => Response::err("unsupported op"),
@@ -198,34 +267,81 @@ async fn write_response(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pet::state::Species;
+    use chrono::{TimeZone, Utc};
     use std::time::Duration as StdDuration;
 
-    fn new_state() -> ServerState {
-        ServerState {
-            ping_count: Mutex::new(0),
-        }
+    fn fixed_now() -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(2026, 1, 1, 12, 0, 0).unwrap()
+    }
+
+    fn new_state() -> (ServerState, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let state_path = dir.path().join("pet.json");
+        // Use the real current time as the pet's baseline, not a fixed
+        // past timestamp: `handle_request` calls `catch_up` against
+        // `SystemClock::now()`, and a fixed past `last_tick` would
+        // introduce a large, unpredictable simulated gap (potentially
+        // landing the pet in the Asleep activity depending on what hour
+        // that gap's end falls on), which would make ops like `feed`
+        // silently no-op in a way unrelated to what this test is
+        // actually checking.
+        let now = SystemClock.now();
+        let pet = PetState::newborn("T".into(), Species::Blob, now);
+        let state = ServerState {
+            pet: Mutex::new(pet),
+            config: Config::default(),
+            state_path,
+        };
+        (state, dir)
     }
 
     #[test]
-    fn handle_request_ping_increments_counter() {
-        let state = new_state();
+    fn handle_request_ping_still_works() {
+        let (state, _dir) = new_state();
         let req = Request::new(RequestOp::Ping);
 
         let resp = handle_request(&state, &req);
-        let json = serde_json::to_value(&resp).unwrap();
-        assert_eq!(json["ok"], true);
-        assert_eq!(*state.ping_count.lock().unwrap(), 1);
 
-        let resp2 = handle_request(&state, &req);
-        let json2 = serde_json::to_value(&resp2).unwrap();
-        assert_eq!(json2["ok"], true);
-        assert_eq!(*state.ping_count.lock().unwrap(), 2);
+        assert!(resp.ok);
     }
 
     #[test]
-    fn handle_request_unimplemented_ops_return_error() {
-        let state = new_state();
-        let req = Request::new(RequestOp::Status);
+    fn handle_request_feed_actually_feeds_the_pet() {
+        let (state, _dir) = new_state();
+        let req = Request::new(RequestOp::Feed {
+            exit_code: 0,
+            duration_ms: 0,
+            argv0: "cargo".into(),
+            ts: fixed_now().timestamp(),
+        });
+
+        let resp = handle_request(&state, &req);
+
+        assert!(resp.ok);
+        let pet = state.pet.lock().unwrap();
+        assert_eq!(pet.commands_eaten, 1);
+        assert!(pet.satiety.get() > 70);
+    }
+
+    #[test]
+    fn handle_request_clean_actually_cleans() {
+        let (state, _dir) = new_state();
+        state.pet.lock().unwrap().poops.push(fixed_now());
+
+        let req = Request::new(RequestOp::Clean);
+        let resp = handle_request(&state, &req);
+
+        assert!(resp.ok);
+        assert!(state.pet.lock().unwrap().poops.is_empty());
+    }
+
+    #[test]
+    fn handle_request_hatch_still_returns_not_implemented() {
+        let (state, _dir) = new_state();
+        let req = Request::new(RequestOp::Hatch {
+            species: "blob".into(),
+        });
 
         let resp = handle_request(&state, &req);
 
@@ -236,7 +352,7 @@ mod tests {
 
     #[test]
     fn handle_request_unknown_op_returns_error() {
-        let state = new_state();
+        let (state, _dir) = new_state();
         let req = Request::new(RequestOp::Unknown);
 
         let resp = handle_request(&state, &req);
@@ -245,15 +361,21 @@ mod tests {
         assert!(resp.error.is_some());
     }
 
+    fn new_state_arc() -> (Arc<ServerState>, tempfile::TempDir) {
+        let (state, dir) = new_state();
+        (Arc::new(state), dir)
+    }
+
     async fn spawn_test_server(
         socket_path: std::path::PathBuf,
     ) -> (
         tokio::task::JoinHandle<anyhow::Result<()>>,
         tokio::sync::oneshot::Sender<()>,
+        tempfile::TempDir,
     ) {
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
         let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
-        let state = Arc::new(new_state());
+        let (state, dir) = new_state_arc();
 
         let handle = tokio::spawn(async move {
             serve_with_ready_signal(&socket_path, state, shutdown_rx, Some(ready_tx)).await
@@ -264,7 +386,7 @@ mod tests {
         // silently in some unexpected way.
         let _ = tokio::time::timeout(StdDuration::from_secs(2), ready_rx).await;
 
-        (handle, shutdown_tx)
+        (handle, shutdown_tx, dir)
     }
 
     #[tokio::test]
@@ -272,7 +394,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let socket_path = dir.path().join("test.sock");
 
-        let (handle, shutdown_tx) = spawn_test_server(socket_path.clone()).await;
+        let (handle, shutdown_tx, _state_dir) = spawn_test_server(socket_path.clone()).await;
 
         let stream = UnixStream::connect(&socket_path).await.unwrap();
         let mut reader = BufReader::new(stream);
@@ -299,7 +421,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let socket_path = dir.path().join("test.sock");
 
-        let (handle, shutdown_tx) = spawn_test_server(socket_path.clone()).await;
+        let (handle, shutdown_tx, _state_dir) = spawn_test_server(socket_path.clone()).await;
 
         let stream = UnixStream::connect(&socket_path).await.unwrap();
         let mut reader = BufReader::new(stream);
@@ -336,7 +458,7 @@ mod tests {
         // listening socket. Connecting to it will fail immediately.
         std::fs::write(&socket_path, b"").unwrap();
 
-        let (handle, shutdown_tx) = spawn_test_server(socket_path.clone()).await;
+        let (handle, shutdown_tx, _state_dir) = spawn_test_server(socket_path.clone()).await;
 
         let stream = UnixStream::connect(&socket_path)
             .await

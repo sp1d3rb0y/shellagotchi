@@ -19,6 +19,12 @@ pub struct Config {
     pub junk_food_commands: Vec<String>,
     pub ignored_exit_codes: Vec<i32>,
     pub bad_food_meter_decay_per_hour: u32,
+    /// Caps how many hours of elapsed real time [`crate::pet::engine::catch_up`]
+    /// will simulate in one go, protecting the pet from unrealistic
+    /// single-shot decay after a long laptop-suspend or daemon-downtime gap.
+    /// `None` disables the cap entirely ("hardcore mode": the full gap is
+    /// simulated, however long it was).
+    pub max_offline_hours: Option<f64>,
 }
 
 impl Default for Config {
@@ -39,6 +45,7 @@ impl Default for Config {
             ],
             ignored_exit_codes: vec![130],
             bad_food_meter_decay_per_hour: 1,
+            max_offline_hours: Some(12.0),
         }
     }
 }

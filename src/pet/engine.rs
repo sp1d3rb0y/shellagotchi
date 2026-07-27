@@ -201,6 +201,73 @@ pub fn tick(
     Vec::new()
 }
 
+/// Size of each simulated chunk in [`catch_up`]'s replay loop.
+///
+/// Note: this is deliberately 1 hour, not the 5-minute granularity a naive
+/// reading of "5-minute chunked replay" might suggest. `tick()` rounds its
+/// per-call decay to the nearest whole stat point; at the current decay
+/// rates (e.g. 3/hour satiety), a 5-minute slice is only 0.25 points, which
+/// rounds to *zero* on every single call — chunking that finely would
+/// silently produce no decay at all, no matter how long the gap. Hourly
+/// chunks avoid that rounding trap (whole-hour decay amounts round
+/// losslessly) while still being fine-grained enough to correctly
+/// re-evaluate the sleep/wake window per chunk, since that determination
+/// (`is_within_sleep_window`) is itself hour-of-day based.
+const CATCH_UP_CHUNK: Duration = Duration::hours(1);
+
+/// Advances `state` from `state.last_tick` to `now`, handling large gaps
+/// (e.g. laptop suspend, daemon downtime) by capping the simulated elapsed
+/// time at `cfg.max_offline_hours` and replaying it in coarse chunks rather
+/// than a single naive tick. This prevents a week-long gap from either
+/// nuking the pet's stats in one shot or requiring absurd numbers of tiny
+/// ticks.
+///
+/// Two-level capping:
+/// 1. The total amount of elapsed time actually *simulated* is capped at
+///    `cfg.max_offline_hours` (or unlimited when `None`), protecting the pet
+///    from unrealistic multi-day decay in one shot.
+/// 2. Whatever amount is simulated is replayed via repeated `tick()` calls
+///    in [`CATCH_UP_CHUNK`]-sized chunks, so sleep/wake windows within the
+///    gap are correctly re-evaluated per chunk rather than using a single
+///    hour-of-day determination for the whole span.
+///
+/// Regardless of capping, `state.last_tick` is always set to the real `now`
+/// at the end — a capped (discarded) portion of the gap is never re-offered
+/// to a subsequent `catch_up`/`tick` call.
+#[allow(dead_code)]
+pub fn catch_up(
+    state: &mut PetState,
+    now: DateTime<Utc>,
+    cfg: &Config,
+    rng: &mut impl rand::Rng,
+) -> Vec<Event> {
+    let real_elapsed = now - state.last_tick;
+    if real_elapsed <= Duration::zero() {
+        return Vec::new();
+    }
+
+    let simulated_elapsed = match cfg.max_offline_hours {
+        Some(max_h) => {
+            let cap = Duration::milliseconds((max_h * 3600.0 * 1000.0) as i64);
+            real_elapsed.min(cap)
+        }
+        None => real_elapsed,
+    };
+
+    let effective_now = state.last_tick + simulated_elapsed;
+
+    let mut events = Vec::new();
+    let mut checkpoint = state.last_tick;
+    while checkpoint < effective_now {
+        checkpoint = (checkpoint + CATCH_UP_CHUNK).min(effective_now);
+        events.extend(tick(state, checkpoint, cfg, rng));
+    }
+
+    state.last_tick = now;
+
+    events
+}
+
 /// Cooldown window for `pet_interaction`, to prevent spamming boredom resets.
 const PET_INTERACTION_COOLDOWN_MINUTES: i64 = 10;
 
@@ -1031,5 +1098,109 @@ mod tests {
             triggered,
             "expected death via feed() to trigger at least once across 50 seeds"
         );
+    }
+
+    // --- catch_up tests (Task 12) ---
+
+    #[test]
+    fn small_gap_behaves_like_normal_tick() {
+        let start = fixed_now();
+        let cfg = Config::default();
+
+        let mut via_catch_up = PetState::newborn("T".into(), Species::Blob, start);
+        let mut rng1 = StdRng::seed_from_u64(0);
+        catch_up(
+            &mut via_catch_up,
+            start + Duration::hours(1),
+            &cfg,
+            &mut rng1,
+        );
+
+        let mut via_tick = PetState::newborn("T".into(), Species::Blob, start);
+        let mut rng2 = StdRng::seed_from_u64(0);
+        tick(&mut via_tick, start + Duration::hours(1), &cfg, &mut rng2);
+
+        assert_eq!(via_catch_up.satiety.get(), via_tick.satiety.get());
+        assert_eq!(via_catch_up.energy.get(), via_tick.energy.get());
+        assert_eq!(via_catch_up.hygiene.get(), via_tick.hygiene.get());
+        assert_eq!(via_catch_up.last_tick, via_tick.last_tick);
+    }
+
+    #[test]
+    fn gap_is_capped_at_max_offline_hours() {
+        let start = fixed_now();
+        let mut state = PetState::newborn("T".into(), Species::Blob, start);
+        let cfg = Config {
+            max_offline_hours: Some(12.0),
+            ..Config::default()
+        };
+        let mut rng = StdRng::seed_from_u64(0);
+
+        let now = start + Duration::hours(24 * 3);
+        catch_up(&mut state, now, &cfg, &mut rng);
+
+        assert_eq!(state.last_tick, now);
+        assert!(
+            state.satiety.get() > 0,
+            "expected only ~12h of decay to be applied, got satiety {}",
+            state.satiety.get()
+        );
+    }
+
+    #[test]
+    fn max_offline_hours_none_disables_cap() {
+        let start = fixed_now();
+        let mut state = PetState::newborn("T".into(), Species::Blob, start);
+        let cfg = Config {
+            max_offline_hours: None,
+            ..Config::default()
+        };
+        let mut rng = StdRng::seed_from_u64(0);
+
+        let now = start + Duration::hours(20);
+        catch_up(&mut state, now, &cfg, &mut rng);
+
+        assert_eq!(state.last_tick, now);
+        assert!(
+            state.satiety.get() < 70,
+            "expected decay over the full uncapped 20h gap, got satiety {}",
+            state.satiety.get()
+        );
+    }
+
+    #[test]
+    fn nights_within_gap_are_simulated_as_sleep() {
+        let start = Utc.with_ymd_and_hms(2026, 1, 1, 10, 0, 0).unwrap();
+        let mut state = PetState::newborn("T".into(), Species::Blob, start);
+        let cfg = Config {
+            max_offline_hours: Some(30.0),
+            ..Config::default()
+        };
+        let mut rng = StdRng::seed_from_u64(0);
+
+        let now = start + Duration::hours(24);
+        catch_up(&mut state, now, &cfg, &mut rng);
+
+        assert_eq!(state.last_tick, now);
+        assert!(
+            state.energy.get() > 22,
+            "expected the ~8h night window within the gap to be simulated as \
+             sleep (boosting energy), but energy was {} (<=22 would suggest \
+             the pet was awake the whole time)",
+            state.energy.get()
+        );
+    }
+
+    #[test]
+    fn zero_or_negative_gap_is_noop() {
+        let start = fixed_now();
+        let mut state = PetState::newborn("T".into(), Species::Blob, start);
+        let cfg = Config::default();
+        let mut rng = StdRng::seed_from_u64(0);
+
+        let before = state.clone();
+        catch_up(&mut state, start, &cfg, &mut rng);
+
+        assert_eq!(state, before);
     }
 }

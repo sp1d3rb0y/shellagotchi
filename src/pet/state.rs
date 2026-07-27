@@ -90,11 +90,18 @@ impl PetState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::Utc;
+    use chrono::TimeZone;
+
+    /// A fixed, deterministic timestamp for tests. Tests must never call
+    /// `Utc::now()`/`Local::now()` directly (clippy.toml disallows it
+    /// project-wide, including test code, so behaviour stays reproducible).
+    fn fixed_now() -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(2026, 1, 1, 12, 0, 0).unwrap()
+    }
 
     #[test]
     fn newborn_has_documented_defaults() {
-        let now = Utc::now();
+        let now = fixed_now();
         let p = PetState::newborn("Rusty".into(), Species::Blob, now);
         assert_eq!(p.schema_version, 1);
         assert_eq!(p.satiety.get(), 70);
@@ -114,7 +121,7 @@ mod tests {
 
     #[test]
     fn json_roundtrip_is_stable() {
-        let now = Utc::now();
+        let now = fixed_now();
         let p = PetState::newborn("Rusty".into(), Species::Dragon, now);
         let json = serde_json::to_string(&p).unwrap();
         let back: PetState = serde_json::from_str(&json).unwrap();
@@ -123,7 +130,7 @@ mod tests {
 
     #[test]
     fn unknown_field_is_rejected_with_clear_error() {
-        let now = Utc::now();
+        let now = fixed_now();
         let p = PetState::newborn("Rusty".into(), Species::Ghost, now);
         let mut value: serde_json::Value = serde_json::to_value(&p).unwrap();
         value

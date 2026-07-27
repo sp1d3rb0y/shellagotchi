@@ -46,10 +46,11 @@ mod tests {
     use super::*;
     use crate::pet::state::Species;
     use crate::pet::stats::Stat;
-    use chrono::Utc;
+    use chrono::DateTime;
 
     fn make_state(alive: bool, activity: Activity, happiness: u16) -> PetState {
-        let mut state = PetState::newborn("T".into(), Species::Blob, Utc::now());
+        let fixed_now = DateTime::from_timestamp(0, 0).unwrap();
+        let mut state = PetState::newborn("T".into(), Species::Blob, fixed_now);
         state.alive = alive;
         state.activity = activity;
         state.happiness = Stat::new(happiness);

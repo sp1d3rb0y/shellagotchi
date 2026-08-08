@@ -70,7 +70,6 @@ pub struct Request {
     pub op: RequestOp,
 }
 
-#[allow(dead_code)]
 impl Request {
     pub fn new(op: RequestOp) -> Self {
         Self {
@@ -84,7 +83,6 @@ impl Request {
 /// field of the enclosing JSON object.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "op", rename_all = "snake_case")]
-#[allow(dead_code)]
 pub enum RequestOp {
     Feed {
         exit_code: i32,
@@ -126,7 +124,6 @@ pub struct Response {
     pub error: Option<String>,
 }
 
-#[allow(dead_code)]
 impl Response {
     /// A bare success acknowledgement with no extra payload, e.g. for
     /// `ping`/`clean`/`pet`: `{"ok":true}`.

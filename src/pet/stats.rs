@@ -4,10 +4,8 @@ use std::ops::{Add, Sub};
 /// A bounded stat value, clamped to the range 0..=100.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
-#[allow(dead_code)]
 pub struct Stat(u8);
 
-#[allow(dead_code)]
 impl Stat {
     pub const MAX: u8 = 100;
 

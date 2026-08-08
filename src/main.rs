@@ -1,6 +1,5 @@
 #![warn(clippy::disallowed_methods)]
 
-#[allow(dead_code)]
 mod clock;
 mod config;
 mod daemon;

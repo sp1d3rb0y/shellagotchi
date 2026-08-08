@@ -5,7 +5,6 @@ use crate::pet::state::{Activity, PetState};
 /// The pet's overall mood, derived purely from its current `PetState`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-#[allow(dead_code)]
 pub enum Mood {
     Ecstatic,
     Happy,
@@ -22,7 +21,6 @@ pub enum Mood {
 /// This is a pure function with no I/O and no time reads. `Dead` and `Sick`
 /// are overriding states that take precedence regardless of the numeric
 /// stats; otherwise mood is derived from the `happiness` stat band.
-#[allow(dead_code)]
 pub fn derive_mood(state: &PetState) -> Mood {
     if !state.alive {
         return Mood::Dead;

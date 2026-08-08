@@ -9,7 +9,6 @@ pub const CURRENT_SCHEMA_VERSION: u32 = 1;
 /// The species of a pet, chosen randomly at hatch time (in a later task).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-#[allow(dead_code)]
 pub enum Species {
     Blob,
     Cat,
@@ -40,7 +39,6 @@ impl std::str::FromStr for Species {
 /// The current activity/state of a pet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-#[allow(dead_code)]
 pub enum Activity {
     Awake,
     Asleep,
@@ -56,7 +54,6 @@ pub enum Activity {
 /// schema drift is caught early rather than silently ignored.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-#[allow(dead_code)]
 pub struct PetState {
     pub schema_version: u32,
     pub name: String,
@@ -80,7 +77,6 @@ pub struct PetState {
     pub last_pet_interaction: Option<DateTime<Utc>>,
 }
 
-#[allow(dead_code)]
 impl PetState {
     /// Constructs a freshly-hatched pet with the documented newborn
     /// defaults: satiety/happiness/energy at 70, hygiene/health at 100,

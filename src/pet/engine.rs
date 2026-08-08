@@ -21,12 +21,10 @@ use crate::pet::stats::Stat;
 /// An event emitted by a tick, for logging/UI purposes. Empty for now;
 /// later tasks will add variants (fed, pooped, slept, got sick, etc).
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum Event {}
 
 /// A single shell command completion, fed to [`feed`] to update the pet's
 /// stats. One `FeedEvent` corresponds to one shell command's exit.
-#[allow(dead_code)]
 pub struct FeedEvent<'a> {
     pub exit_code: i32,
     pub argv0: &'a str,
@@ -34,13 +32,9 @@ pub struct FeedEvent<'a> {
 }
 
 /// Per-hour decay rates for time-based stat loss.
-#[allow(dead_code)]
 const SATIETY_LOSS_PER_HOUR: f64 = 3.0;
-#[allow(dead_code)]
 const ENERGY_LOSS_PER_HOUR: f64 = 2.0;
-#[allow(dead_code)]
 const HYGIENE_LOSS_PER_HOUR: f64 = 1.0;
-#[allow(dead_code)]
 const ENERGY_GAIN_PER_HOUR_ASLEEP: f64 = 8.0;
 
 /// Determines whether `now`'s hour-of-day falls within the configured sleep
@@ -75,7 +69,6 @@ fn is_within_sleep_window(now: DateTime<Utc>, cfg: &Config) -> bool {
 /// ENTIRE elapsed duration, not per-minute — a tick spanning a sleep/wake
 /// boundary applies one rate uniformly. Acceptable for v1 since ticks are
 /// frequent (~60s) relative to the 8h window.
-#[allow(dead_code)]
 pub fn tick(
     state: &mut PetState,
     now: DateTime<Utc>,
@@ -234,7 +227,6 @@ const CATCH_UP_CHUNK: Duration = Duration::hours(1);
 /// Regardless of capping, `state.last_tick` is always set to the real `now`
 /// at the end — a capped (discarded) portion of the gap is never re-offered
 /// to a subsequent `catch_up`/`tick` call.
-#[allow(dead_code)]
 pub fn catch_up(
     state: &mut PetState,
     now: DateTime<Utc>,
@@ -276,7 +268,6 @@ const PET_INTERACTION_COOLDOWN_MINUTES: i64 = 10;
 /// Subject to a 10-minute cooldown: if called again before the cooldown
 /// elapses (relative to `state.last_pet_interaction`), it's a no-op — the
 /// pet's boredom and `last_pet_interaction` are left unchanged.
-#[allow(dead_code)]
 pub fn pet_interaction(state: &mut PetState, now: DateTime<Utc>) -> Vec<Event> {
     let on_cooldown = state
         .last_pet_interaction
@@ -297,7 +288,6 @@ pub fn pet_interaction(state: &mut PetState, now: DateTime<Utc>) -> Vec<Event> {
 /// Pure like [`tick`]: never reads the clock itself; `event.now` is supplied
 /// by the caller. `rng` must be supplied by the caller for deterministic,
 /// testable sickness rolls.
-#[allow(dead_code)]
 pub fn feed(
     state: &mut PetState,
     event: FeedEvent,
@@ -412,7 +402,6 @@ fn apply_clean(state: &mut PetState, award_happiness_bonus: bool) {
 ///
 /// This is the explicit, user-invoked path (`shellagotchi clean` / the IPC
 /// `Clean` op) and always awards the happiness bonus, unconditionally.
-#[allow(dead_code)]
 pub fn clean(state: &mut PetState) -> Vec<Event> {
     apply_clean(state, true);
 
@@ -428,7 +417,6 @@ pub fn clean(state: &mut PetState) -> Vec<Event> {
 /// question of when hatching is allowed (only once the previous pet is
 /// dead) and for archiving the old state; this function only knows how to
 /// construct the new one.
-#[allow(dead_code)]
 pub fn hatch(name: String, species: crate::pet::state::Species, now: DateTime<Utc>) -> PetState {
     PetState::newborn(name, species, now)
 }
